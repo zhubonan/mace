@@ -176,6 +176,44 @@ def test_training_conversion_disables_convolution_fusion(monkeypatch):
     assert calls == [(source, {"device": "cuda", "conv_fusion": False})]
 
 
+def test_compiled_training_conversion_disables_e3nn_codegen(monkeypatch):
+    events = []
+    source = object()
+    converted = object()
+
+    @contextmanager
+    def fake_disable_e3nn_codegen():
+        events.append("enter_codegen_disabled")
+        yield
+        events.append("exit_codegen_disabled")
+
+    monkeypatch.setattr(run_train, "deepcopy", lambda model: model)
+    monkeypatch.setattr(
+        run_train.mace_compile,
+        "disable_e3nn_codegen",
+        fake_disable_e3nn_codegen,
+    )
+    monkeypatch.setattr(
+        run_train,
+        "run_e3nn_to_cueq",
+        lambda model, **kwargs: events.append((model, kwargs)) or converted,
+    )
+
+    assert (
+        run_train._convert_e3nn_to_cueq_for_training(
+            source,
+            "cuda",
+            compile_training=True,
+        )
+        is converted
+    )
+    assert events == [
+        "enter_codegen_disabled",
+        (source, {"device": "cuda", "conv_fusion": False}),
+        "exit_codegen_disabled",
+    ]
+
+
 def test_train_one_epoch_compiles_first_real_batch_once_and_reuses_wrapper(
     monkeypatch,
 ):

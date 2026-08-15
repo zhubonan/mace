@@ -651,6 +651,10 @@ def test_compiled_force_stress_training_keeps_graph_count_dynamic():
             validation_batch=runtime_batch,
         )
         assert compiled_model.is_compiled
+        assert compiled_model.dynamic_shape_signatures == (
+            compile_training._batch_shape_signature(trace_batch),
+            compile_training._batch_shape_signature(runtime_batch),
+        )
 
         eager_outputs = eager_model(
             {key: value.clone() for key, value in runtime_batch.items()},

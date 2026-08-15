@@ -105,8 +105,20 @@ def _configure_model_for_training(args, *configure_args):
         return configure_model(args, *configure_args)
 
 
-def _convert_e3nn_to_cueq_for_training(model, device):
-    return run_e3nn_to_cueq(deepcopy(model), device=device, conv_fusion=False)
+def _convert_e3nn_to_cueq_for_training(
+    model,
+    device,
+    compile_training: bool = False,
+):
+    construction_context = (
+        mace_compile.disable_e3nn_codegen() if compile_training else nullcontext()
+    )
+    with construction_context:
+        return run_e3nn_to_cueq(
+            deepcopy(model),
+            device=device,
+            conv_fusion=False,
+        )
 
 
 def _build_eager_distributed_model(
@@ -896,7 +908,11 @@ def run(args) -> None:
             "MagneticScaleShiftMACE",
             "AtomicDielectricMACE",
         ]
-        model = _convert_e3nn_to_cueq_for_training(model, device)
+        model = _convert_e3nn_to_cueq_for_training(
+            model,
+            device,
+            compile_training=getattr(args, "compile_training", False),
+        )
     if args.enable_oeq:
         logging.info("Converting model to OEQ for accelerated training")
         assert model.__class__.__name__ in [

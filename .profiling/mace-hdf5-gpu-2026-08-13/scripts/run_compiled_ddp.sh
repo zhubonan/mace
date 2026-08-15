@@ -50,6 +50,10 @@ export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
     "$world_size"
 
 mkdir -p "$output_dir"
+extra_args=()
+if [[ "${MACE_DDP_DUMP_FX_ONLY:-0}" == "1" ]]; then
+    extra_args+=(--dump-fx-only)
+fi
 exec "$torchrun_bin" \
     --standalone \
     --nproc-per-node="$world_size" \
@@ -57,6 +61,9 @@ exec "$torchrun_bin" \
     --mode="$mode" \
     --dataset="$dataset" \
     --output-dir="$output_dir" \
+    --model-preset="${MACE_DDP_MODEL_PRESET:-small}" \
+    --production-ablation="${MACE_DDP_PRODUCTION_ABLATION:-none}" \
     --batch-size="${MACE_DDP_BATCH_SIZE:-64}" \
     --warmup-steps="${MACE_DDP_WARMUP_STEPS:-2}" \
-    --timed-steps="${MACE_DDP_TIMED_STEPS:-16}"
+    --timed-steps="${MACE_DDP_TIMED_STEPS:-16}" \
+    "${extra_args[@]}"

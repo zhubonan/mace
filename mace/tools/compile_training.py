@@ -564,6 +564,7 @@ class CompiledTrainingModel(torch.nn.Module):
         self.input_keys: tuple[str, ...] = ()
         self.parameter_names = tuple(name for name, _ in model.named_parameters())
         self.buffer_names = tuple(name for name, _ in model.named_buffers())
+        self.dynamic_shape_signatures: tuple[tuple[int, int, int], ...] | None = None
         self._compiled_ref: tuple[Any | None] = (None,)
         self.compilation_error: str | None = None
 
@@ -593,6 +594,9 @@ class CompiledTrainingModel(torch.nn.Module):
             self.input_keys = fx_model.meta["mace_input_keys"]
             self.parameter_names = fx_model.meta["mace_parameter_names"]
             self.buffer_names = fx_model.meta["mace_buffer_names"]
+            self.dynamic_shape_signatures = fx_model.meta.get(
+                "mace_dynamic_shape_signatures"
+            )
             compiled = torch.compile(
                 fx_model,
                 mode=mode,
