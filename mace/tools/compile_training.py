@@ -642,6 +642,43 @@ class CompiledTrainingModel(torch.nn.Module):
         if reason is not None:
             self.compilation_error = reason
 
+    def materialize_compiled_backward(
+        self, batch: Mapping[str, torch.Tensor]
+    ) -> None:
+        """Compile the backward graph before DDP installs reducer hooks."""
+
+        if not self.is_compiled:
+            return
+        try:
+            outputs = self(batch)
+            if not self.is_compiled:
+                return
+            differentiable_outputs = tuple(
+                output for output in outputs.values() if output.requires_grad
+            )
+            parameters = tuple(
+                parameter
+                for parameter in self.base_model.parameters()
+                if parameter.requires_grad
+            )
+            torch.autograd.grad(
+                differentiable_outputs,
+                parameters,
+                grad_outputs=tuple(
+                    torch.ones_like(output) for output in differentiable_outputs
+                ),
+                allow_unused=False,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            reason = f"{type(exc).__name__}: {exc}"
+            self.disable_compilation(reason)
+            warnings.warn(
+                "MACE compiler-friendly training backward setup failed before "
+                f"DDP construction; using eager execution: {reason}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
     def _eager_forward(
         self, batch: Mapping[str, torch.Tensor]
     ) -> dict[str, torch.Tensor]:

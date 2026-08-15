@@ -179,6 +179,7 @@ def main() -> None:
             mode="default",
             dynamic=True,
         )
+        compiled_facade.materialize_compiled_backward(first_batch.to_dict())
         compiled_facade = train_tools._synchronize_compiled_training_state(
             compiled_facade,
             device=device,

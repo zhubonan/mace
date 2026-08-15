@@ -236,6 +236,58 @@ def test_compiled_training_lazily_falls_back_after_backend_failure():
         assert "synthetic lazy backend failure" in str(runtime_warnings[0].message)
 
 
+def test_compiled_training_materializes_backward_before_ddp_and_falls_back():
+    class BackwardFailure(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, value):
+            del ctx
+            return value.sum().reshape(1)
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            del ctx, grad_output
+            raise RuntimeError("synthetic lazy backward failure")
+
+    class BackwardFailingBackend:
+        def __call__(self, *args):
+            parameters = [value for value in args if value.requires_grad]
+            connected_value = sum(parameter.sum() for parameter in parameters)
+            return (BackwardFailure.apply(connected_value),)
+
+    with tools.torch_tools.default_dtype(torch.float64):
+        model = _create_model()
+        batch = _create_batch()
+        compiled_model = mace_compile.compile_training_model(
+            model,
+            batch,
+            output_args={
+                "energy": True,
+                "forces": False,
+                "virials": False,
+                "stress": False,
+            },
+        )
+        assert compiled_model.is_compiled
+        compiled_model._compiled_ref = (  # pylint: disable=W0212
+            BackwardFailingBackend(),
+        )
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            compiled_model.materialize_compiled_backward(batch)
+
+        assert not compiled_model.is_compiled
+        assert compiled_model.compilation_error == (
+            "RuntimeError: synthetic lazy backward failure"
+        )
+        assert all(parameter.grad is None for parameter in model.parameters())
+        runtime_warnings = [
+            warning for warning in caught if issubclass(warning.category, RuntimeWarning)
+        ]
+        assert len(runtime_warnings) == 1
+        assert "synthetic lazy backward failure" in str(runtime_warnings[0].message)
+
+
 def test_training_fx_prunes_unused_live_state_and_audits_owned_constants():
     with tools.torch_tools.default_dtype(torch.float64):
         model = _create_model()

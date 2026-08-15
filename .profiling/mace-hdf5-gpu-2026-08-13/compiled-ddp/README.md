@@ -37,3 +37,10 @@ The eager cold step took 2771 ms and the compiled cold step took 23659 ms,
 including compilation, so these numbers are not a warmed performance
 comparison. Requesting two local ranks reported `visible_gpus=1` and exited
 with code 3 before launching workers, as designed.
+
+After adding pre-DDP backward materialization, the same one-rank compiled
+smoke remained active without fallback and produced the same loss. Compilation
+and backward materialization now occur before the timed optimizer step; that
+first recorded step took 165.0 ms. This remains a functionality check, not a
+multi-rank throughput result. The real two- and four-GPU NCCL comparison is
+still required before deployment.

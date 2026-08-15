@@ -239,7 +239,12 @@ def test_train_one_epoch_compiles_first_real_batch_once_and_reuses_wrapper(
 def test_train_one_epoch_wraps_compiled_facade_once_with_existing_ddp(monkeypatch):
     owner = _EnergyModel()
     optimizer = torch.optim.Adam(owner.parameters())
-    facade = object()
+
+    class Facade:
+        def materialize_compiled_backward(self, batch):
+            events.append(("materialize_backward", self, batch))
+
+    facade = Facade()
     ddp_wrapper = object()
     events = []
     step_calls = []
@@ -307,6 +312,14 @@ def test_train_one_epoch_wraps_compiled_facade_once_with_existing_ddp(monkeypatc
     assert [
         event for event in events if isinstance(event, tuple) and event[0] == "ddp"
     ] == [("ddp", facade, None)]
+    materialize_events = [
+        event
+        for event in events
+        if isinstance(event, tuple) and event[0] == "materialize_backward"
+    ]
+    assert len(materialize_events) == 1
+    assert materialize_events[0][1] is facade
+    assert events.index(materialize_events[0]) < events.index(("ddp", facade, None))
     assert all(call["model"] is owner for call in step_calls)
     assert all(call["forward_model"] is ddp_wrapper for call in step_calls)
     assert [

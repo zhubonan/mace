@@ -116,6 +116,7 @@ def _ddp_worker(
                 mode="default",
                 dynamic=True,
             )
+            facade.materialize_compiled_backward(batch)
             facade = train_tools._synchronize_compiled_training_state(
                 facade,
                 device=torch.device("cpu"),

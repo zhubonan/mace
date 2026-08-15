@@ -99,17 +99,21 @@ added after its constructor has built reducer buckets. The lifecycle is:
    active.
 3. On the first real training batch, construct the compiler-friendly facade on
    each rank using that rank's batch and `dynamic=True`.
-4. Establish rank consensus on whether compilation setup succeeded. If any
+4. Materialize the compiled forward and backward once on that batch before
+   constructing DDP. This keeps lazy AOTAutograd backward compilation outside
+   reducer collectives; a setup failure disables compilation locally.
+5. Establish rank consensus on whether compilation setup succeeded. If any
    rank selected eager fallback, disable compiled execution on every rank.
-5. Wrap the facade with the existing PyTorch DDP constructor and the same
+6. Wrap the facade with the existing PyTorch DDP constructor and the same
    process group, device, and local-rank policy used by eager training.
-6. Invoke the DDP-wrapped facade for the first and all subsequent training
+7. Invoke the DDP-wrapped facade for the first and all subsequent training
    forwards. Cache this wrapper across epochs.
-7. Continue using the base model for optimizer parameter ownership,
+8. Continue using the base model for optimizer parameter ownership,
    gradient clipping, EMA, checkpointing, validation, and final export.
 
-The first batch is not dropped or replayed. It both initializes the facade and
-performs the first optimizer step after DDP construction.
+The first batch is used once for the no-update forward/backward materialization
+and then for its normal optimizer step after DDP construction. No optimizer
+step is dropped or repeated.
 
 ## Gradient and loss semantics
 

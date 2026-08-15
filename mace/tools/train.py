@@ -465,6 +465,10 @@ def train_one_epoch(
                     mode="default",
                     dynamic=True,
                 )
+                if distributed:
+                    compiled_training_model.materialize_compiled_backward(
+                        batch.to_dict()
+                    )
                 compiled_training_model = _synchronize_compiled_training_state(
                     compiled_training_model,
                     device=device,
