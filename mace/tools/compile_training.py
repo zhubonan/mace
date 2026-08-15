@@ -10,6 +10,7 @@ the lowered graph instead of a runtime double-backward through
 from __future__ import annotations
 
 import contextlib
+import difflib
 import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -444,13 +445,11 @@ def _prune_unused_placeholders(
     return live_input_keys, live_parameter_names, live_buffer_names
 
 
-def make_training_fx(
+def _lower_training_fx(
     model: torch.nn.Module,
     example_batch: Mapping[str, torch.Tensor],
     output_args: Mapping[str, bool],
 ) -> GraphModule:
-    """Lower MACE's internal conservative derivative to a functional FX graph."""
-
     flat_model, input_keys, parameter_names, buffer_names, inputs = _trace_inputs(
         model, example_batch, output_args
     )
@@ -476,6 +475,65 @@ def make_training_fx(
     fx_model.meta["mace_parameter_names"] = parameter_names
     fx_model.meta["mace_buffer_names"] = buffer_names
     fx_model.meta["mace_architecture_constants"] = architecture_constants
+    return fx_model
+
+
+def _batch_shape_signature(
+    batch: Mapping[str, torch.Tensor],
+) -> tuple[int, int, int]:
+    return (
+        int(batch["ptr"].numel() - 1),
+        int(batch["positions"].shape[0]),
+        int(batch["edge_index"].shape[1]),
+    )
+
+
+def _first_code_difference(left: GraphModule, right: GraphModule) -> str:
+    differing_lines = []
+    for line in difflib.unified_diff(
+        left.code.splitlines(),
+        right.code.splitlines(),
+        n=1,
+        lineterm="",
+    ):
+        if line.startswith(("-", "+")) and not line.startswith(("---", "+++")):
+            differing_lines.append(line[:500])
+            if len(differing_lines) == 2:
+                return "\n".join(differing_lines)
+    if differing_lines:
+        return differing_lines[0]
+    return "FX programs differ without a printable line difference"
+
+
+def make_training_fx(
+    model: torch.nn.Module,
+    example_batch: Mapping[str, torch.Tensor],
+    output_args: Mapping[str, bool],
+    validation_batch: Mapping[str, torch.Tensor] | None = None,
+) -> GraphModule:
+    """Lower MACE's internal conservative derivative to a functional FX graph."""
+
+    fx_model = _lower_training_fx(model, example_batch, output_args)
+    if validation_batch is None:
+        return fx_model
+
+    first_shape = _batch_shape_signature(example_batch)
+    second_shape = _batch_shape_signature(validation_batch)
+    if first_shape == second_shape:
+        raise RuntimeError(
+            "dynamic training compilation requires two batches with different "
+            f"graph-derived dimensions; both were {first_shape}"
+        )
+
+    validation_fx = _lower_training_fx(model, validation_batch, output_args)
+    if fx_model.code != validation_fx.code:
+        difference = _first_code_difference(fx_model, validation_fx)
+        raise RuntimeError(
+            "dynamic training FX specialized graph-derived dimensions: "
+            f"{first_shape} versus {second_shape}; first FX divergence:\n"
+            f"{difference}"
+        )
+    fx_model.meta["mace_dynamic_shape_signatures"] = (first_shape, second_shape)
     return fx_model
 
 

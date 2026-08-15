@@ -524,6 +524,84 @@ def test_make_training_fx_does_not_mutate_source_model():
             assert_close(value, state_before[name])
 
 
+def test_training_fx_accepts_two_different_symbolic_shapes():
+    with tools.torch_tools.default_dtype(torch.float64):
+        model = _create_model()
+        first = _create_batch(num_graphs=2)
+        second = _create_batch(num_graphs=3)
+
+        fx_model = compile_training.make_training_fx(
+            model,
+            first,
+            output_args={
+                "energy": True,
+                "forces": True,
+                "virials": True,
+                "stress": True,
+            },
+            validation_batch=second,
+        )
+
+        assert fx_model.meta["mace_dynamic_shape_signatures"] == (
+            compile_training._batch_shape_signature(first),
+            compile_training._batch_shape_signature(second),
+        )
+
+
+def test_training_fx_rejects_identical_shape_probe():
+    with tools.torch_tools.default_dtype(torch.float64):
+        model = _create_model()
+        first = _create_batch(num_graphs=2)
+        second = {key: value.clone() for key, value in first.items()}
+
+        with pytest.raises(RuntimeError, match="different graph-derived dimensions"):
+            compile_training.make_training_fx(
+                model,
+                first,
+                output_args={"energy": True, "forces": True},
+                validation_batch=second,
+            )
+
+
+def _expand_graph(size: int) -> torch.fx.GraphModule:
+    graph = torch.fx.Graph()
+    value = graph.placeholder("value")
+    expanded = graph.call_function(
+        torch.ops.aten.expand.default,
+        args=(value, [size]),
+    )
+    graph.output(expanded)
+    return torch.fx.GraphModule(torch.nn.Module(), graph)
+
+
+def test_training_fx_reports_first_fx_divergence(monkeypatch):
+    first_fx = _expand_graph(16)
+    second_fx = _expand_graph(24)
+    lowered = iter((first_fx, second_fx))
+    monkeypatch.setattr(
+        compile_training,
+        "_lower_training_fx",
+        lambda model, batch, output_args: next(lowered),
+    )
+    first = _create_batch(num_graphs=2)
+    second = _create_batch(num_graphs=3)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        compile_training.make_training_fx(
+            _create_model(),
+            first,
+            output_args={"energy": True},
+            validation_batch=second,
+        )
+
+    message = str(exc_info.value)
+    assert "first FX divergence" in message
+    assert str(compile_training._batch_shape_signature(first)) in message
+    assert str(compile_training._batch_shape_signature(second)) in message
+    assert "[16]" in message
+    assert "[24]" in message
+
+
 def test_compiled_force_stress_training_keeps_graph_count_dynamic():
     with tools.torch_tools.default_dtype(torch.float64):
         eager_model = _create_model()
