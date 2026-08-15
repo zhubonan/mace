@@ -134,6 +134,23 @@ def test_compiled_force_stress_training_matches_eager_gradients_and_state_dict()
         )
         assert compiled_model.is_compiled
         assert compiled_model.compilation_error is None
+        assert dict(compiled_model.named_modules())["base_model"] is candidate_model
+        candidate_parameters = dict(candidate_model.named_parameters())
+        compiled_parameters = dict(compiled_model.named_parameters())
+        assert compiled_parameters.keys() == candidate_parameters.keys()
+        assert all(
+            compiled_parameters[name] is parameter
+            for name, parameter in candidate_parameters.items()
+        )
+        reducer_parameters = [
+            parameter
+            for _, module in compiled_model.named_modules()
+            for _, parameter in module.named_parameters(recurse=False)
+        ]
+        assert len(reducer_parameters) == len({id(p) for p in reducer_parameters})
+        assert {id(p) for p in reducer_parameters} == {
+            id(p) for p in candidate_parameters.values()
+        }
         assert {
             "energy",
             "forces",
@@ -158,6 +175,31 @@ def test_compiled_force_stress_training_matches_eager_gradients_and_state_dict()
         _assert_parameter_gradients_close(eager_model, candidate_model)
 
         assert compiled_model.state_dict().keys() == eager_model.state_dict().keys()
+
+
+def test_compiled_training_can_disable_compilation_without_losing_base_state():
+    with tools.torch_tools.default_dtype(torch.float64):
+        model = _create_model()
+        batch = _create_batch()
+        compiled_model = mace_compile.compile_training_model(
+            model,
+            batch,
+            output_args={
+                "energy": True,
+                "forces": True,
+                "virials": False,
+                "stress": False,
+            },
+        )
+        parameter_ids = [id(parameter) for parameter in model.parameters()]
+        state_keys = model.state_dict().keys()
+
+        compiled_model.disable_compilation("distributed rank fallback")
+
+        assert not compiled_model.is_compiled
+        assert compiled_model.compilation_error == "distributed rank fallback"
+        assert [id(parameter) for parameter in compiled_model.parameters()] == parameter_ids
+        assert compiled_model.state_dict().keys() == state_keys
 
 
 def test_compiled_training_lazily_falls_back_after_backend_failure():

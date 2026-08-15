@@ -587,8 +587,7 @@ class CompiledTrainingModel(torch.nn.Module):
         dynamic: bool,
     ) -> None:
         super().__init__()
-        # A tuple prevents registering a second parameter owner or changing state keys.
-        self._base_model_ref = (model,)
+        self.base_model = model
         self.output_args = dict(output_args)
         self.output_keys = _requested_output_keys(output_args)
         self.input_keys: tuple[str, ...] = ()
@@ -631,14 +630,17 @@ class CompiledTrainingModel(torch.nn.Module):
             )
 
     @property
-    def base_model(self) -> torch.nn.Module:
-        return self._base_model_ref[0]
-
-    @property
     def is_compiled(self) -> bool:
         """Whether this objective has an active lowered compiled variant."""
 
         return self._compiled_ref[0] is not None
+
+    def disable_compilation(self, reason: str | None = None) -> None:
+        """Permanently use eager execution without changing model ownership."""
+
+        self._compiled_ref = (None,)
+        if reason is not None:
+            self.compilation_error = reason
 
     def _eager_forward(
         self, batch: Mapping[str, torch.Tensor]
@@ -675,17 +677,25 @@ class CompiledTrainingModel(torch.nn.Module):
         return dict(zip(self.output_keys, flat_outputs))
 
     def parameters(self, recurse: bool = True):
+        if not recurse:
+            return iter(())
         return self.base_model.parameters(recurse=recurse)
 
     def named_parameters(self, prefix: str = "", recurse: bool = True, **kwargs):
+        if not recurse:
+            return iter(())
         return self.base_model.named_parameters(
             prefix=prefix, recurse=recurse, **kwargs
         )
 
     def buffers(self, recurse: bool = True):
+        if not recurse:
+            return iter(())
         return self.base_model.buffers(recurse=recurse)
 
     def named_buffers(self, prefix: str = "", recurse: bool = True, **kwargs):
+        if not recurse:
+            return iter(())
         return self.base_model.named_buffers(prefix=prefix, recurse=recurse, **kwargs)
 
     def state_dict(self, *args, **kwargs):
