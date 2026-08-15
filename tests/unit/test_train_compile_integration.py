@@ -185,8 +185,17 @@ def test_train_one_epoch_compiles_first_real_batch_once_and_reuses_wrapper(
     compile_calls = []
     step_calls = []
 
-    def fake_compile(model, example_batch, output_args, mode, dynamic):
-        compile_calls.append((model, example_batch, output_args, mode, dynamic))
+    def fake_compile(
+        model,
+        example_batch,
+        output_args,
+        mode,
+        dynamic,
+        validation_batch,
+    ):
+        compile_calls.append(
+            (model, example_batch, validation_batch, output_args, mode, dynamic)
+        )
         return wrapper
 
     def fake_take_step(**kwargs):
@@ -232,8 +241,59 @@ def test_train_one_epoch_compiles_first_real_batch_once_and_reuses_wrapper(
     assert len(compile_calls) == 1
     assert compile_calls[0][0] is owner
     assert_close(compile_calls[0][1]["values"], torch.tensor([1.0]))
+    assert_close(compile_calls[0][2]["values"], torch.tensor([2.0]))
+    assert [float(call["batch"].values) for call in step_calls] == [1.0, 2.0, 3.0]
     assert all(call["model"] is owner for call in step_calls)
     assert all(call["forward_model"] is wrapper for call in step_calls)
+
+
+def test_train_one_epoch_one_batch_falls_back_without_dropping_step(monkeypatch):
+    owner = _EnergyModel()
+    optimizer = torch.optim.Adam(owner.parameters())
+    eager_facade = object()
+    compile_calls = []
+    step_calls = []
+
+    def fake_compile(
+        model,
+        example_batch,
+        output_args,
+        mode,
+        dynamic,
+        validation_batch,
+    ):
+        compile_calls.append((example_batch, validation_batch))
+        return eager_facade
+
+    def fake_take_step(**kwargs):
+        step_calls.append(kwargs)
+        return torch.tensor(0.0), {"loss": 0.0, "time": 0.0}
+
+    monkeypatch.setattr(mace_compile, "compile_training_model", fake_compile)
+    monkeypatch.setattr(train_tools, "take_step", fake_take_step)
+
+    cached = train_tools.train_one_epoch(
+        model=owner,
+        loss_fn=_EnergyLoss(),
+        data_loader=[_Batch(torch.tensor([1.0]))],
+        optimizer=optimizer,
+        epoch=0,
+        output_args={"forces": True, "virials": False, "stress": False},
+        max_grad_norm=None,
+        ema=None,
+        logger=_Logger(),
+        device=torch.device("cpu"),
+        distributed=False,
+        compile_training=True,
+        compiled_training_model=None,
+    )
+
+    assert cached is eager_facade
+    assert len(compile_calls) == 1
+    assert_close(compile_calls[0][0]["values"], torch.tensor([1.0]))
+    assert compile_calls[0][1] is None
+    assert len(step_calls) == 1
+    assert_close(step_calls[0]["batch"].values, torch.tensor([1.0]))
 
 
 def test_train_one_epoch_wraps_compiled_facade_once_with_existing_ddp(monkeypatch):

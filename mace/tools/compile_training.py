@@ -555,6 +555,7 @@ class CompiledTrainingModel(torch.nn.Module):
         output_args: Mapping[str, bool],
         mode: str,
         dynamic: bool,
+        validation_batch: Mapping[str, torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
         self.base_model = model
@@ -579,7 +580,16 @@ class CompiledTrainingModel(torch.nn.Module):
         if _has_small_graph_dimension(example_batch):
             return
         try:
-            fx_model = make_training_fx(model, example_batch, output_args)
+            if dynamic and validation_batch is None:
+                raise RuntimeError(
+                    "dynamic training compilation requires a second validation batch"
+                )
+            fx_model = make_training_fx(
+                model,
+                example_batch,
+                output_args,
+                validation_batch=validation_batch,
+            )
             self.input_keys = fx_model.meta["mace_input_keys"]
             self.parameter_names = fx_model.meta["mace_parameter_names"]
             self.buffer_names = fx_model.meta["mace_buffer_names"]
@@ -723,6 +733,7 @@ def compile_training_model(
     output_args: Mapping[str, bool],
     mode: str = "default",
     dynamic: bool = True,
+    validation_batch: Mapping[str, torch.Tensor] | None = None,
 ) -> CompiledTrainingModel:
     """Create a compiler-friendly force/stress training facade for ``model``."""
 
@@ -732,6 +743,7 @@ def compile_training_model(
         output_args=output_args,
         mode=mode,
         dynamic=dynamic,
+        validation_batch=validation_batch,
     )
 
 

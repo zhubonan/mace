@@ -108,6 +108,7 @@ def _ddp_worker(
         with tools.torch_tools.default_dtype(torch.float64):
             model = _create_model()
             batch = _create_batch([rank])
+            validation_batch = _create_batch([rank, rank + world_size])
             optimizer = torch.optim.Adam(model.parameters(), lr=1.0e-3)
             facade = mace_compile.compile_training_model(
                 model,
@@ -115,6 +116,7 @@ def _ddp_worker(
                 output_args=_OUTPUT_ARGS,
                 mode="default",
                 dynamic=True,
+                validation_batch=validation_batch,
             )
             facade.materialize_compiled_backward(batch)
             facade = train_tools._synchronize_compiled_training_state(

@@ -137,6 +137,7 @@ def test_compiled_force_stress_training_matches_eager_gradients_and_state_dict()
             output_args=output_args,
             mode="default",
             dynamic=True,
+            validation_batch=_create_batch(num_graphs=3),
         )
         assert compiled_model.is_compiled
         assert compiled_model.compilation_error is None
@@ -196,6 +197,7 @@ def test_compiled_training_can_disable_compilation_without_losing_base_state():
                 "virials": False,
                 "stress": False,
             },
+            validation_batch=_create_batch(num_graphs=3),
         )
         parameter_ids = [id(parameter) for parameter in model.parameters()]
         state_keys = model.state_dict().keys()
@@ -219,7 +221,10 @@ def test_compiled_training_lazily_falls_back_after_backend_failure():
         batch = _create_batch()
         output_args = {"energy": True, "forces": True, "virials": False, "stress": False}
         compiled_model = mace_compile.compile_training_model(
-            model, batch, output_args=output_args
+            model,
+            batch,
+            output_args=output_args,
+            validation_batch=_create_batch(num_graphs=3),
         )
         assert compiled_model.is_compiled
         compiled_model._compiled_ref = (FailingBackend(),)  # pylint: disable=W0212
@@ -272,6 +277,7 @@ def test_compiled_training_materializes_backward_before_ddp_and_falls_back():
                 "virials": False,
                 "stress": False,
             },
+            validation_batch=_create_batch(num_graphs=3),
         )
         assert compiled_model.is_compiled
         compiled_model._compiled_ref = (  # pylint: disable=W0212
@@ -323,6 +329,28 @@ def test_training_fx_prunes_unused_live_state_and_audits_owned_constants():
             for node in fx_model.graph.nodes
             if node.op == "placeholder"
         )
+
+
+def test_dynamic_compiled_training_requires_validation_batch():
+    with tools.torch_tools.default_dtype(torch.float64):
+        model = _create_model()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            facade = mace_compile.compile_training_model(
+                model,
+                _create_batch(num_graphs=2),
+                output_args={"energy": True, "forces": True},
+                dynamic=True,
+            )
+
+        assert not facade.is_compiled
+        assert "second validation batch" in facade.compilation_error
+        runtime_warnings = [
+            warning
+            for warning in caught
+            if issubclass(warning.category, RuntimeWarning)
+        ]
+        assert len(runtime_warnings) == 1
 
 
 @pytest.mark.parametrize(
@@ -620,6 +648,7 @@ def test_compiled_force_stress_training_keeps_graph_count_dynamic():
             output_args=output_args,
             mode="default",
             dynamic=True,
+            validation_batch=runtime_batch,
         )
         assert compiled_model.is_compiled
 
@@ -665,6 +694,7 @@ def test_missing_runtime_graph_input_does_not_disable_compiled_variant():
             output_args={"energy": True, "forces": True},
             mode="default",
             dynamic=True,
+            validation_batch=_create_batch(num_graphs=3),
         )
         assert compiled_model.is_compiled
         incomplete_batch = dict(batch)
@@ -704,6 +734,7 @@ def test_compiled_force_stress_training_cuda_optimizer_and_ema_parity(enable_cue
             output_args=output_args,
             mode="default",
             dynamic=True,
+            validation_batch=_batch_to(_create_batch(num_graphs=3), "cuda"),
         )
         assert compiled_model.is_compiled
 

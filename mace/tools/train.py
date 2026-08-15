@@ -5,6 +5,7 @@
 ###########################################################################################
 
 import dataclasses
+import itertools
 import logging
 import time
 from collections import defaultdict
@@ -455,31 +456,51 @@ def train_one_epoch(
         if rank == 0:
             logger.log(opt_metrics)
     else:
-        for batch in data_loader:
-            if compile_training and compiled_training_model is None:
-                batch = batch.to(device)
-                compiled_training_model = mace_compile.compile_training_model(
-                    model,
-                    batch.to_dict(),
-                    output_args=output_args,
-                    mode="default",
-                    dynamic=True,
+        batch_iterator = iter(data_loader)
+        if compile_training and compiled_training_model is None:
+            try:
+                first_batch = next(batch_iterator).to(device)
+            except StopIteration:
+                return None
+            try:
+                validation_batch = next(batch_iterator).to(device)
+            except StopIteration:
+                validation_batch = None
+
+            compiled_training_model = mace_compile.compile_training_model(
+                model,
+                first_batch.to_dict(),
+                output_args=output_args,
+                mode="default",
+                dynamic=True,
+                validation_batch=(
+                    None if validation_batch is None else validation_batch.to_dict()
+                ),
+            )
+            if distributed:
+                compiled_training_model.materialize_compiled_backward(
+                    first_batch.to_dict()
                 )
-                if distributed:
-                    compiled_training_model.materialize_compiled_backward(
-                        batch.to_dict()
-                    )
-                compiled_training_model = _synchronize_compiled_training_state(
+            compiled_training_model = _synchronize_compiled_training_state(
+                compiled_training_model,
+                device=device,
+                distributed=distributed,
+            )
+            if distributed:
+                compiled_training_model = DistributedDataParallel(
                     compiled_training_model,
-                    device=device,
-                    distributed=distributed,
+                    device_ids=distributed_device_ids,
                 )
-                if distributed:
-                    compiled_training_model = DistributedDataParallel(
-                        compiled_training_model,
-                        device_ids=distributed_device_ids,
-                    )
-                    logging.info("Compiled training DDP active")
+                logging.info("Compiled training DDP active")
+
+            prefetched = (
+                (first_batch,)
+                if validation_batch is None
+                else (first_batch, validation_batch)
+            )
+            batch_iterator = itertools.chain(prefetched, batch_iterator)
+
+        for batch in batch_iterator:
             _, opt_metrics = take_step(
                 model=model_to_train,
                 forward_model=compiled_training_model,
