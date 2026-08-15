@@ -82,6 +82,7 @@ def test_default_parser_critical_defaults():
     assert args.batch_size == 10
     assert args.lr == 0.01
     assert args.max_num_epochs == 2048
+    assert args.compile_training is False
     assert args.scaling == "rms_forces_scaling"
     assert args.seed == 123
 
@@ -94,6 +95,12 @@ def test_default_parser_critical_defaults():
     assert args.forces_key == "REF_forces"
     assert args.stress_key == "REF_stress"
     assert args.virials_key == "REF_virials"
+
+
+def test_compile_training_flag_is_opt_in():
+    args = build_default_arg_parser().parse_args(MINIMAL_ARGV + ["--compile_training"])
+
+    assert args.compile_training is True
 
 
 def test_stage_two_alias_maps_to_swa_dest():

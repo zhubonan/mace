@@ -9,6 +9,7 @@ import glob
 import json
 import logging
 import os
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 from typing import List, Optional
@@ -37,6 +38,7 @@ from mace.cli.convert_oeq_e3nn import run as run_oeq_to_e3nn
 from mace.cli.visualise_train import TrainingPlotter
 from mace.data import KeySpecification, update_keyspec_from_kwargs
 from mace.modules.lora import inject_LoRAs, merge_lora_weights
+from mace.tools import compile as mace_compile
 from mace.tools import torch_geometric
 from mace.tools.distributed_tools import init_distributed
 from mace.tools.model_script_utils import configure_model
@@ -86,12 +88,34 @@ def main() -> None:
     run(args)
 
 
+def _validate_compile_training_args(args) -> None:
+    if not getattr(args, "compile_training", False):
+        return
+    if args.distributed:
+        raise ValueError(
+            "--compile_training does not yet support --distributed training"
+        )
+    if args.lbfgs:
+        raise ValueError("--compile_training does not yet support --lbfgs")
+
+
+def _configure_model_for_training(args, *configure_args):
+    construction_context = (
+        mace_compile.disable_e3nn_codegen()
+        if getattr(args, "compile_training", False)
+        else nullcontext()
+    )
+    with construction_context:
+        return configure_model(args, *configure_args)
+
+
 def run(args) -> None:
     """
     This script runs the training/fine tuning for mace
     """
     tag = tools.get_tag(name=args.name, seed=args.seed)
     args, input_log_messages = tools.check_args(args)
+    _validate_compile_training_args(args)
 
     # default keyspec to update using heads dictionary
     args.key_specification = KeySpecification()
@@ -799,7 +823,15 @@ def run(args) -> None:
     args.avg_num_neighbors = get_avg_num_neighbors(head_configs, args, train_loader, device)
 
     # Model
-    model, output_args = configure_model(args, train_loader, atomic_energies, model_foundation, heads, z_table, head_configs)
+    model, output_args = _configure_model_for_training(
+        args,
+        train_loader,
+        atomic_energies,
+        model_foundation,
+        heads,
+        z_table,
+        head_configs,
+    )
     model.to(device)
 
     if args.lora:
@@ -1026,6 +1058,7 @@ def run(args) -> None:
         train_sampler=train_sampler,
         rank=rank,
         data_aug_magmom=args.data_aug_magmom,
+        compile_training=getattr(args, "compile_training", False),
     )
 
     logging.info("")

@@ -10,6 +10,8 @@ from e3nn import get_optimization_defaults, set_optimization_defaults
 from torch import autograd, nn
 from torch.fx import symbolic_trace
 
+from mace.tools.compile_training import compile_training_model
+
 ModuleFactory = Callable[..., nn.Module]
 TypeTuple = Tuple[type, ...]
 
@@ -36,8 +38,10 @@ def disable_e3nn_codegen():
     """Context manager that disables the legacy PyTorch code generation used in e3nn."""
     init_val = get_optimization_defaults()["jit_script_fx"]
     set_optimization_defaults(jit_script_fx=False)
-    yield
-    set_optimization_defaults(jit_script_fx=init_val)
+    try:
+        yield
+    finally:
+        set_optimization_defaults(jit_script_fx=init_val)
 
 
 def prepare(func: ModuleFactory, allow_autograd: bool = True) -> ModuleFactory:
