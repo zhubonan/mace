@@ -10,6 +10,7 @@ from torch_ema import ExponentialMovingAverage
 
 from mace.cli import run_train
 from mace.tools import compile as mace_compile
+from mace.tools.checkpoint import CheckpointBuilder
 
 train_tools = importlib.import_module("mace.tools.train")
 
@@ -402,6 +403,82 @@ def test_public_train_accepts_distributed_compiled_mode(monkeypatch):
     _call_public_train_with_invalid_compile_configuration(
         monkeypatch=monkeypatch,
         distributed=True,
+    )
+
+
+def test_compiled_training_checkpoint_optimizer_and_ema_keep_base_ownership(
+    monkeypatch,
+):
+    owner = _EnergyModel()
+    optimizer = torch.optim.Adam(owner.parameters())
+    ema = ExponentialMovingAverage(owner.parameters(), decay=0.9)
+    saved_states = []
+    evaluation_losses = iter([1.0, 0.5])
+
+    monkeypatch.setattr(
+        train_tools,
+        "evaluate",
+        lambda **kwargs: (next(evaluation_losses), {}),
+    )
+    monkeypatch.setattr(
+        train_tools,
+        "train_one_epoch",
+        lambda **kwargs: object(),
+    )
+    checkpoint_handler = SimpleNamespace(
+        save=lambda **kwargs: saved_states.append(kwargs["state"])
+    )
+    scheduler = SimpleNamespace(state_dict=lambda: {})
+
+    train_tools.train(
+        model=owner,
+        loss_fn=_EnergyLoss(),
+        train_loader=[],
+        valid_loaders={"valid": object()},
+        optimizer=optimizer,
+        lr_scheduler=scheduler,
+        start_epoch=0,
+        max_num_epochs=1,
+        patience=2,
+        checkpoint_handler=checkpoint_handler,
+        logger=_Logger(),
+        eval_interval=1,
+        output_args={
+            "energy": True,
+            "forces": False,
+            "virials": False,
+            "stress": False,
+        },
+        device=torch.device("cpu"),
+        log_errors="",
+        ema=ema,
+        compile_training=True,
+    )
+
+    assert len(saved_states) == 1
+    saved_state = saved_states[0]
+    assert saved_state.model is owner
+    checkpoint = CheckpointBuilder.create_checkpoint(saved_state)
+    assert checkpoint["model"].keys() == owner.state_dict().keys()
+    assert not any(
+        key.startswith(("module.", "base_model.")) for key in checkpoint["model"]
+    )
+    owner_parameters = list(owner.parameters())
+    optimizer_parameters = [
+        parameter for group in optimizer.param_groups for parameter in group["params"]
+    ]
+    assert len(optimizer_parameters) == len(owner_parameters)
+    assert all(
+        optimizer_parameter is owner_parameter
+        for optimizer_parameter, owner_parameter in zip(
+            optimizer_parameters, owner_parameters
+        )
+    )
+    ema_parameters = [parameter_ref() for parameter_ref in ema._params_refs]
+    assert len(ema_parameters) == len(owner_parameters)
+    assert all(
+        ema_parameter is owner_parameter
+        for ema_parameter, owner_parameter in zip(ema_parameters, owner_parameters)
     )
 
 
