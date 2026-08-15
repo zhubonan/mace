@@ -109,6 +109,12 @@ def _configure_model_for_training(args, *configure_args):
         return configure_model(args, *configure_args)
 
 
+def _convert_e3nn_to_cueq_for_training(model, device):
+    return run_e3nn_to_cueq(
+        deepcopy(model), device=device, conv_fusion=False
+    )
+
+
 def run(args) -> None:
     """
     This script runs the training/fine tuning for mace
@@ -884,7 +890,7 @@ def run(args) -> None:
             "MagneticScaleShiftMACE",
             "AtomicDielectricMACE",
         ]
-        model = run_e3nn_to_cueq(deepcopy(model), device=device)
+        model = _convert_e3nn_to_cueq_for_training(model, device)
     if args.enable_oeq:
         logging.info("Converting model to OEQ for accelerated training")
         assert model.__class__.__name__ in [

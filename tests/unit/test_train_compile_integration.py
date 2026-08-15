@@ -152,6 +152,21 @@ def test_take_step_uses_forward_wrapper_but_eager_model_owns_training_state():
         assert_close(eager_shadow, candidate_shadow)
 
 
+def test_training_conversion_disables_convolution_fusion(monkeypatch):
+    calls = []
+    source = object()
+    converted = object()
+    monkeypatch.setattr(run_train, "deepcopy", lambda model: model)
+    monkeypatch.setattr(
+        run_train,
+        "run_e3nn_to_cueq",
+        lambda model, **kwargs: calls.append((model, kwargs)) or converted,
+    )
+
+    assert run_train._convert_e3nn_to_cueq_for_training(source, "cuda") is converted
+    assert calls == [(source, {"device": "cuda", "conv_fusion": False})]
+
+
 def test_train_one_epoch_compiles_first_real_batch_once_and_reuses_wrapper(
     monkeypatch,
 ):

@@ -22,8 +22,18 @@ class _ConversionModelStub(torch.nn.Module):
         return self
 
 
-@pytest.mark.parametrize("device", ["cuda", torch.device("cuda")])
-def test_conversion_enables_convolution_fusion_for_cuda_devices(monkeypatch, device):
+@pytest.mark.parametrize(
+    ("device", "conv_fusion", "expected"),
+    [
+        ("cuda", None, True),
+        (torch.device("cuda"), None, True),
+        ("cuda", False, False),
+        ("cpu", True, True),
+    ],
+)
+def test_conversion_selects_requested_convolution_fusion(
+    monkeypatch, device, conv_fusion, expected
+):
     monkeypatch.setattr(
         convert_e3nn_cueq,
         "extract_config_mace_model",
@@ -34,6 +44,8 @@ def test_conversion_enables_convolution_fusion_for_cuda_devices(monkeypatch, dev
         },
     )
 
-    converted = convert_e3nn_cueq.run(_ConversionModelStub(), device=device)
+    converted = convert_e3nn_cueq.run(
+        _ConversionModelStub(), device=device, conv_fusion=conv_fusion
+    )
 
-    assert converted.cueq_config.conv_fusion is True
+    assert converted.cueq_config.conv_fusion is expected
