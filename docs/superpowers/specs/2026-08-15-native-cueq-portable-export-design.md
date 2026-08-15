@@ -1,5 +1,9 @@
 # Native cuEquivariance Training and Portable e3nn Export
 
+> **Status: deferred.** On 2026-08-15 the user chose to preserve the current
+> `--only_cueq` training and final-save behavior. This document is retained as
+> a possible future design and is not approved for implementation now.
+
 ## Objective
 
 Decouple MACE's training backend from its public saved-model format.
@@ -7,6 +11,8 @@ Decouple MACE's training backend from its public saved-model format.
 training model, while every final model artifact will be a canonical e3nn model
 stored on CPU. Backend-native checkpoints remain unchanged so interrupted
 training can resume without conversion.
+
+No production behavior is changed while this design is deferred.
 
 This replaces the current coupling in which `--only_cueq` simultaneously
 selects the faster native construction route and suppresses conversion back to
