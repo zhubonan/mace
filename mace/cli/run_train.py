@@ -91,10 +91,6 @@ def main() -> None:
 def _validate_compile_training_args(args) -> None:
     if not getattr(args, "compile_training", False):
         return
-    if args.distributed:
-        raise ValueError(
-            "--compile_training does not yet support --distributed training"
-        )
     if args.lbfgs:
         raise ValueError("--compile_training does not yet support --lbfgs")
 
@@ -110,9 +106,19 @@ def _configure_model_for_training(args, *configure_args):
 
 
 def _convert_e3nn_to_cueq_for_training(model, device):
-    return run_e3nn_to_cueq(
-        deepcopy(model), device=device, conv_fusion=False
-    )
+    return run_e3nn_to_cueq(deepcopy(model), device=device, conv_fusion=False)
+
+
+def _build_eager_distributed_model(
+    model,
+    *,
+    distributed: bool,
+    compile_training: bool,
+    device_ids: Optional[List[int]],
+):
+    if not distributed or compile_training:
+        return None
+    return DDP(model, device_ids=device_ids)
 
 
 def run(args) -> None:
@@ -985,15 +991,18 @@ def run(args) -> None:
 
     if args.wandb:
         setup_wandb(args)
-    if args.distributed:
-        # device_ids is only valid for single-device accelerator modules;
-        # CPU (gloo) requires device_ids=None. xpu counts as an accelerator:
-        # narrowing this to cuda alone silently gave XPU runs a CPU-style DDP.
-        distributed_model = DDP(
-            model, device_ids=[local_rank] if args.device in ("cuda", "xpu") else None
-        )
-    else:
-        distributed_model = None
+    # device_ids is only valid for single-device accelerator modules;
+    # CPU (gloo) requires device_ids=None. xpu counts as an accelerator:
+    # narrowing this to cuda alone silently gave XPU runs a CPU-style DDP.
+    distributed_device_ids = (
+        [local_rank] if args.device in ("cuda", "xpu") else None
+    )
+    distributed_model = _build_eager_distributed_model(
+        model,
+        distributed=args.distributed,
+        compile_training=getattr(args, "compile_training", False),
+        device_ids=distributed_device_ids,
+    )
 
 
     train_valid_data_loader = {}
@@ -1060,6 +1069,7 @@ def run(args) -> None:
         log_wandb=args.wandb,
         distributed=args.distributed,
         distributed_model=distributed_model,
+        distributed_device_ids=distributed_device_ids,
         plotter=plotter,
         train_sampler=train_sampler,
         rank=rank,
@@ -1158,9 +1168,7 @@ def run(args) -> None:
             # after param.requires_grad = False was called before evaluating stage-one model
             for param in model.parameters():
                 param.requires_grad = True
-            distributed_model = DDP(
-                model, device_ids=[local_rank] if args.device in ("cuda", "xpu") else None
-            )
+            distributed_model = DDP(model, device_ids=distributed_device_ids)
         model_to_evaluate = model if not args.distributed else distributed_model
         if swa_eval:
             logging.info(f"Loaded Stage two model from epoch {epoch} for evaluation")

@@ -73,7 +73,7 @@ def _assert_optimizer_states_close(left, right):
 
 
 def _call_public_train_with_invalid_compile_configuration(
-    *, distributed=False, lbfgs=False, unsupported_output=None
+    *, monkeypatch=None, distributed=False, lbfgs=False, unsupported_output=None
 ):
     model = _EnergyModel()
     optimizer = (
@@ -89,11 +89,19 @@ def _call_public_train_with_invalid_compile_configuration(
     }
     if unsupported_output is not None:
         output_args[unsupported_output] = True
+    valid_loaders = {}
+    if monkeypatch is not None:
+        monkeypatch.setattr(
+            train_tools,
+            "evaluate",
+            lambda **kwargs: (0.0, {}),
+        )
+        valid_loaders = {"valid": object()}
     train_tools.train(
         model=model,
         loss_fn=_EnergyLoss(),
         train_loader=[],
-        valid_loaders={},
+        valid_loaders=valid_loaders,
         optimizer=optimizer,
         lr_scheduler=None,
         start_epoch=0,
@@ -227,7 +235,146 @@ def test_train_one_epoch_compiles_first_real_batch_once_and_reuses_wrapper(
     assert all(call["forward_model"] is wrapper for call in step_calls)
 
 
-@pytest.mark.parametrize("unsupported", ["distributed", "lbfgs"])
+def test_train_one_epoch_wraps_compiled_facade_once_with_existing_ddp(monkeypatch):
+    owner = _EnergyModel()
+    optimizer = torch.optim.Adam(owner.parameters())
+    facade = object()
+    ddp_wrapper = object()
+    events = []
+    step_calls = []
+
+    monkeypatch.setattr(
+        mace_compile,
+        "compile_training_model",
+        lambda *args, **kwargs: events.append("compile") or facade,
+    )
+
+    def fake_synchronize(model, **kwargs):
+        events.append(("sync", model, kwargs))
+        return model
+
+    def fake_ddp(model, device_ids):
+        events.append(("ddp", model, device_ids))
+        return ddp_wrapper
+
+    def fake_take_step(**kwargs):
+        events.append("step")
+        step_calls.append(kwargs)
+        return torch.tensor(0.0), {"loss": 0.0, "time": 0.0}
+
+    monkeypatch.setattr(
+        train_tools, "_synchronize_compiled_training_state", fake_synchronize
+    )
+    monkeypatch.setattr(train_tools, "DistributedDataParallel", fake_ddp)
+    monkeypatch.setattr(train_tools, "take_step", fake_take_step)
+
+    cached = train_tools.train_one_epoch(
+        model=owner,
+        loss_fn=_EnergyLoss(),
+        data_loader=[_Batch(torch.tensor([1.0])), _Batch(torch.tensor([2.0]))],
+        optimizer=optimizer,
+        epoch=0,
+        output_args={"forces": True, "virials": False, "stress": False},
+        max_grad_norm=None,
+        ema=None,
+        logger=_Logger(),
+        device=torch.device("cpu"),
+        distributed=True,
+        distributed_device_ids=None,
+        compile_training=True,
+    )
+    cached = train_tools.train_one_epoch(
+        model=owner,
+        loss_fn=_EnergyLoss(),
+        data_loader=[_Batch(torch.tensor([3.0]))],
+        optimizer=optimizer,
+        epoch=1,
+        output_args={"forces": True, "virials": False, "stress": False},
+        max_grad_norm=None,
+        ema=None,
+        logger=_Logger(),
+        device=torch.device("cpu"),
+        distributed=True,
+        distributed_device_ids=None,
+        compile_training=True,
+        compiled_training_model=cached,
+    )
+
+    assert cached is ddp_wrapper
+    assert events.count("compile") == 1
+    assert events.count("step") == 3
+    assert [
+        event for event in events if isinstance(event, tuple) and event[0] == "ddp"
+    ] == [("ddp", facade, None)]
+    assert all(call["model"] is owner for call in step_calls)
+    assert all(call["forward_model"] is ddp_wrapper for call in step_calls)
+    assert [
+        event[1] for event in events if isinstance(event, tuple) and event[0] == "sync"
+    ] == [
+        facade,
+        ddp_wrapper,
+        ddp_wrapper,
+        ddp_wrapper,
+    ]
+
+
+def test_synchronize_compiled_training_state_disables_compiled_peer(monkeypatch):
+    class Facade:
+        is_compiled = True
+
+        def __init__(self):
+            self.reason = None
+
+        def disable_compilation(self, reason):
+            self.is_compiled = False
+            self.reason = reason
+
+    facade = Facade()
+
+    def fake_all_reduce(flag, op):
+        assert op is torch.distributed.ReduceOp.MIN
+        flag.zero_()
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+    result = train_tools._synchronize_compiled_training_state(
+        facade, device=torch.device("cpu"), distributed=True
+    )
+
+    assert result is facade
+    assert not facade.is_compiled
+    assert facade.reason == "another distributed rank entered eager fallback"
+
+
+@pytest.mark.parametrize("compile_training", [False, True])
+def test_eager_ddp_construction_is_deferred_for_compiled_training(
+    monkeypatch, compile_training
+):
+    model = object()
+    wrapped = object()
+    calls = []
+    monkeypatch.setattr(
+        run_train,
+        "DDP",
+        lambda candidate, device_ids: calls.append((candidate, device_ids)) or wrapped,
+    )
+
+    result = run_train._build_eager_distributed_model(
+        model,
+        distributed=True,
+        compile_training=compile_training,
+        device_ids=[3],
+    )
+
+    if compile_training:
+        assert result is None
+        assert calls == []
+    else:
+        assert result is wrapped
+        assert calls == [(model, [3])]
+
+
+@pytest.mark.parametrize("unsupported", ["lbfgs"])
 def test_compile_training_rejects_unsupported_modes_before_setup(unsupported):
     args = SimpleNamespace(compile_training=True, distributed=False, lbfgs=False)
     setattr(args, unsupported, True)
@@ -236,13 +383,26 @@ def test_compile_training_rejects_unsupported_modes_before_setup(unsupported):
         run_train._validate_compile_training_args(args)
 
 
-@pytest.mark.parametrize("unsupported", ["distributed", "lbfgs"])
+def test_compile_training_accepts_distributed_mode_before_setup():
+    run_train._validate_compile_training_args(
+        SimpleNamespace(compile_training=True, distributed=True, lbfgs=False)
+    )
+
+
+@pytest.mark.parametrize("unsupported", ["lbfgs"])
 def test_public_train_rejects_unsupported_compiled_modes(unsupported):
     with pytest.raises(ValueError, match=unsupported):
         _call_public_train_with_invalid_compile_configuration(
             distributed=unsupported == "distributed",
             lbfgs=unsupported == "lbfgs",
         )
+
+
+def test_public_train_accepts_distributed_compiled_mode(monkeypatch):
+    _call_public_train_with_invalid_compile_configuration(
+        monkeypatch=monkeypatch,
+        distributed=True,
+    )
 
 
 @pytest.mark.parametrize(

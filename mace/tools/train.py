@@ -47,6 +47,33 @@ class SWAContainer:
     loss_fn: torch.nn.Module
 
 
+def _compiled_training_facade(model: torch.nn.Module) -> torch.nn.Module:
+    if isinstance(model, DistributedDataParallel):
+        return model.module
+    return model
+
+
+def _synchronize_compiled_training_state(
+    model: torch.nn.Module,
+    *,
+    device: torch.device,
+    distributed: bool,
+) -> torch.nn.Module:
+    if not distributed:
+        return model
+
+    facade = _compiled_training_facade(model)
+    compiled_flag = torch.tensor(
+        [int(facade.is_compiled)], dtype=torch.int32, device=device
+    )
+    torch.distributed.all_reduce(compiled_flag, op=torch.distributed.ReduceOp.MIN)
+    if compiled_flag.item() == 0 and facade.is_compiled:
+        reason = "another distributed rank entered eager fallback"
+        facade.disable_compilation(reason)
+        logging.warning("Compiler-friendly distributed training fallback: %s", reason)
+    return model
+
+
 def valid_err_log(
     valid_loss,
     eval_metrics,
@@ -178,16 +205,13 @@ def train(
     save_all_checkpoints: bool = False,
     plotter: TrainingPlotter = None,
     distributed_model: Optional[DistributedDataParallel] = None,
+    distributed_device_ids: Optional[List[int]] = None,
     train_sampler: Optional[DistributedSampler] = None,
     rank: Optional[int] = 0,
     data_aug_magmom: Optional[bool] = False,
     compile_training: bool = False,
 ):
     if compile_training:
-        if distributed:
-            raise ValueError(
-                "compile_training does not yet support distributed training"
-            )
         if isinstance(optimizer, LBFGS):
             raise ValueError("compile_training does not yet support lbfgs")
         supported_outputs = {"energy", "forces", "virials", "stress"}
@@ -280,6 +304,7 @@ def train(
             device=device,
             distributed=distributed,
             distributed_model=distributed_model,
+            distributed_device_ids=distributed_device_ids,
             rank=rank,
             compile_training=compile_training,
             compiled_training_model=compiled_training_model,
@@ -290,7 +315,9 @@ def train(
         # Validate
         if epoch % eval_interval == 0:
             model_to_evaluate = (
-                model if distributed_model is None else distributed_model
+                model
+                if compile_training or distributed_model is None
+                else distributed_model
             )
             param_context = (
                 ema.average_parameters() if ema is not None else nullcontext()
@@ -384,6 +411,7 @@ def train(
 
         epoch += 1
 
+    compiled_training_model = None
     logging.info("Training complete")
 
 
@@ -400,11 +428,14 @@ def train_one_epoch(
     device: torch.device,
     distributed: bool,
     distributed_model: Optional[DistributedDataParallel] = None,
+    distributed_device_ids: Optional[List[int]] = None,
     rank: Optional[int] = 0,
     compile_training: bool = False,
     compiled_training_model: Optional[torch.nn.Module] = None,
 ) -> Optional[torch.nn.Module]:
-    model_to_train = model if distributed_model is None else distributed_model
+    model_to_train = (
+        model if compile_training or distributed_model is None else distributed_model
+    )
 
     if isinstance(optimizer, LBFGS):
         _, opt_metrics = take_step_lbfgs(
@@ -434,6 +465,17 @@ def train_one_epoch(
                     mode="default",
                     dynamic=True,
                 )
+                compiled_training_model = _synchronize_compiled_training_state(
+                    compiled_training_model,
+                    device=device,
+                    distributed=distributed,
+                )
+                if distributed:
+                    compiled_training_model = DistributedDataParallel(
+                        compiled_training_model,
+                        device_ids=distributed_device_ids,
+                    )
+                    logging.info("Compiled training DDP active")
             _, opt_metrics = take_step(
                 model=model_to_train,
                 forward_model=compiled_training_model,
@@ -445,6 +487,12 @@ def train_one_epoch(
                 max_grad_norm=max_grad_norm,
                 device=device,
             )
+            if compile_training:
+                compiled_training_model = _synchronize_compiled_training_state(
+                    compiled_training_model,
+                    device=device,
+                    distributed=distributed,
+                )
             opt_metrics["mode"] = "opt"
             opt_metrics["epoch"] = epoch
             if rank == 0:

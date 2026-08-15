@@ -85,7 +85,7 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         "--compile_training",
         help=(
             "experimentally compile the conservative force/stress training "
-            "forward pass on a single device"
+            "forward pass on a single device or with distributed data parallel"
         ),
         action="store_true",
         default=False,
