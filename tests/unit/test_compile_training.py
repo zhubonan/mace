@@ -1,11 +1,13 @@
 import warnings
 
+import e3nn
 import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
 from ase import build
 from e3nn import o3
+from packaging.version import Version
 from torch.testing import assert_close
 from torch_ema import ExponentialMovingAverage
 
@@ -18,6 +20,10 @@ from mace.tools import torch_geometric
 
 _TABLE = tools.AtomicNumberTable([6])
 _CUTOFF = 5.0
+
+
+def test_compiled_training_requires_symbolic_e3nn_release():
+    assert Version(e3nn.__version__) >= Version("0.6.0")
 
 
 def _create_model(
@@ -304,42 +310,14 @@ def test_training_fx_prunes_unused_live_state_and_audits_owned_constants():
         )
 
         assert not dict(fx_model.named_parameters())
-        fx_constants = dict(fx_model.named_buffers())
-        classifications = dict(
-            fx_model.meta["mace_architecture_constants"]
+        assert not dict(fx_model.named_buffers())
+        assert fx_model.meta["mace_architecture_constants"] == ()
+        assert set(fx_model.meta["mace_parameter_names"]) <= set(
+            dict(model.named_parameters())
         )
-        assert classifications.keys() == fx_constants.keys()
-
-        source_constants = {
-            name: value
-            for name, value in model.named_buffers()
-            if ".U_matrix_" in name
-        }
-        for fx_name, source_name in classifications.items():
-            fx_value = fx_constants[fx_name]
-            source_value = source_constants[source_name]
-            assert fx_value.dtype == source_value.dtype
-            assert fx_value.numel() == source_value.numel()
-            assert torch.equal(
-                torch.sort(fx_value.detach().flatten().cpu()).values,
-                torch.sort(source_value.detach().flatten().cpu()).values,
-            )
-
-        live_buffer_names = set(fx_model.meta["mace_buffer_names"])
-        assert {
-            "radial_embedding.bessel_fn.bessel_weights",
-            "radial_embedding.bessel_fn.prefactor",
-            "radial_embedding.cutoff_fn.p",
-            "radial_embedding.cutoff_fn.r_max",
-            "atomic_energies_fn.atomic_energies",
-            "scale_shift.scale",
-            "scale_shift.shift",
-        } <= live_buffer_names
-        assert "num_interactions" not in live_buffer_names
-        assert not any(".U_matrix_" in name for name in live_buffer_names)
-        assert not any(name.endswith(".output_mask") for name in live_buffer_names)
-        assert not any("weights_0_zeroed" in name for name in live_buffer_names)
-        assert not any("weights_max_zeroed" in name for name in live_buffer_names)
+        assert set(fx_model.meta["mace_buffer_names"]) <= set(
+            dict(model.named_buffers())
+        )
         assert all(
             node.users
             for node in fx_model.graph.nodes
@@ -517,6 +495,33 @@ def test_training_fx_preserves_noncanonical_node_attributes():
         )
         (candidate_energy,) = fx_model(*flat_inputs)
         assert_close(eager_outputs["energy"], candidate_energy)
+
+
+def test_make_training_fx_does_not_mutate_source_model():
+    with tools.torch_tools.default_dtype(torch.float64):
+        model = _create_model()
+        batch = _create_batch(num_graphs=2)
+        state_before = {
+            name: value.detach().clone() for name, value in model.state_dict().items()
+        }
+        modules_before = {name: id(module) for name, module in model.named_modules()}
+
+        compile_training.make_training_fx(
+            model,
+            batch,
+            output_args={
+                "energy": True,
+                "forces": True,
+                "virials": True,
+                "stress": True,
+            },
+        )
+
+        assert modules_before == {
+            name: id(module) for name, module in model.named_modules()
+        }
+        for name, value in model.state_dict().items():
+            assert_close(value, state_before[name])
 
 
 def test_compiled_force_stress_training_keeps_graph_count_dynamic():

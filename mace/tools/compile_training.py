@@ -10,7 +10,6 @@ the lowered graph instead of a runtime double-backward through
 from __future__ import annotations
 
 import contextlib
-import copy
 import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -174,95 +173,8 @@ def _trace_inputs(
     named_buffers = tuple(model.named_buffers())
     parameter_names = tuple(name for name, _ in named_parameters)
     buffer_names = tuple(name for name, _ in named_buffers)
-    # Dispatch-level tracing can populate e3nn execution caches with FakeTensors.
-    # Trace an isolated module while keeping the live model state as explicit inputs.
-    trace_model = copy.deepcopy(model)
-    # e3nn's deepcopy path serializes its generated FX regions through
-    # TorchScript.  During symbolic make_fx tracing, the scripted ``size`` op
-    # converts symbolic dimensions to Python integers and specializes atom and
-    # edge counts.  Restore fresh FX graph modules from the source model while
-    # retaining the isolated parent/model state.
-    for module_name, source_module in model.named_modules(remove_duplicate=False):
-        if not module_name or not isinstance(source_module, GraphModule):
-            continue
-        parent_name, _, child_name = module_name.rpartition(".")
-        target_parent = (
-            trace_model.get_submodule(parent_name) if parent_name else trace_model
-        )
-        setattr(
-            target_parent,
-            child_name,
-            GraphModule(source_module, source_module.graph),
-        )
-    # Generated e3nn graphs query complete prefix shapes to implement generic
-    # broadcasting.  When their inputs are intermediate tensors in the full
-    # MACE trace, PyTorch 2.11 can lower those queries through ``aten.size``
-    # and specialize the edge count.  Capture representative tensor inputs,
-    # then lower each generated region independently so its prefix dimensions
-    # are explicit ``aten.sym_size`` operations before tracing the full model.
-    generated_modules = [
-        (name, module)
-        for name, module in trace_model.named_modules(remove_duplicate=False)
-        if name and isinstance(module, GraphModule)
-    ]
-    module_inputs: dict[str, tuple[torch.Tensor, ...]] = {}
-    hooks = []
-
-    def capture_inputs(name: str):
-        def hook(_module: torch.nn.Module, args: tuple[Any, ...]) -> None:
-            if name in module_inputs:
-                return
-            module_inputs[name] = tuple(
-                arg.detach().requires_grad_(arg.requires_grad)
-                for arg in args
-                if isinstance(arg, torch.Tensor)
-            )
-
-        return hook
-
-    for name, module in generated_modules:
-        hooks.append(module.register_forward_pre_hook(capture_inputs(name)))
-    try:
-        capture_batch = {key: value.detach() for key, value in prepared.items()}
-        with torch.no_grad():
-            trace_model(
-                capture_batch,
-                training=True,
-                compute_force=False,
-                compute_virials=False,
-                compute_stress=False,
-            )
-    finally:
-        for hook in hooks:
-            hook.remove()
-    del capture_batch, hooks
-
-    for name, module in generated_modules:
-        examples = module_inputs.pop(name, None)
-        if examples is None:
-            continue
-        with _fx_duck_shape(False):
-            lowered = make_fx(
-                module,
-                decomposition_table=mace_decomp_table(),
-                tracing_mode="symbolic",
-                _allow_non_fake_inputs=True,
-                _error_on_data_dependent_ops=True,
-            )(*examples)
-        parent_name, _, child_name = name.rpartition(".")
-        target_parent = (
-            trace_model.get_submodule(parent_name) if parent_name else trace_model
-        )
-        setattr(target_parent, child_name, lowered)
-        del examples, lowered
-    module_inputs.clear()
-    del generated_modules, module_inputs
-    # Inline MACE modules registered as compiler simplification boundaries.
-    from mace.tools.compile import simplify  # pylint: disable=import-outside-toplevel
-
-    trace_model = simplify(trace_model)
     flat_model = _FlatFunctionalModel(
-        model=trace_model,
+        model=model,
         input_keys=input_keys,
         output_keys=output_keys,
         parameter_names=parameter_names,
