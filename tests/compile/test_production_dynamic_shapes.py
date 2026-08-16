@@ -13,8 +13,7 @@ from mace.tools import torch_geometric
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _BENCHMARK_PATH = (
-    _REPO_ROOT
-    / ".profiling/mace-hdf5-gpu-2026-08-13/scripts/compiled_ddp_benchmark.py"
+    _REPO_ROOT / ".profiling/mace-hdf5-gpu-2026-08-13/scripts/compiled_ddp_benchmark.py"
 )
 _OUTPUT_ARGS = {
     "energy": True,
@@ -50,6 +49,42 @@ def _parameter_gradients(model: torch.nn.Module) -> dict[str, torch.Tensor]:
         for name, parameter in model.named_parameters()
         if parameter.grad is not None
     }
+
+
+def test_benchmark_marks_the_complete_steady_state_window(monkeypatch):
+    benchmark = _load_benchmark_module()
+    events = []
+
+    class FakeCudart:
+        @staticmethod
+        def cudaProfilerStart():
+            events.append(("profiler_start", None))
+
+        @staticmethod
+        def cudaProfilerStop():
+            events.append(("profiler_stop", None))
+
+    monkeypatch.setattr(
+        benchmark.torch.cuda.nvtx,
+        "range_push",
+        lambda name: events.append(("push", name)),
+    )
+    monkeypatch.setattr(
+        benchmark.torch.cuda.nvtx,
+        "range_pop",
+        lambda: events.append(("pop", None)),
+    )
+    monkeypatch.setattr(benchmark.torch.cuda, "cudart", lambda: FakeCudart())
+
+    benchmark._start_steady_state_capture("compiled", cuda_profiler_api=True)
+    benchmark._stop_steady_state_capture(cuda_profiler_api=True)
+
+    assert events == [
+        ("profiler_start", None),
+        ("push", "compiled_ddp_steady_state"),
+        ("pop", None),
+        ("profiler_stop", None),
+    ]
 
 
 @pytest.mark.gpu

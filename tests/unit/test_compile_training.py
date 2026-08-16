@@ -1,13 +1,18 @@
 import warnings
+from configparser import ConfigParser
+from copy import deepcopy
+import os
+from pathlib import Path
+import subprocess
+import sys
 
-import e3nn
 import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
 from ase import build
 from e3nn import o3
-from packaging.version import Version
+from packaging.requirements import Requirement
 from torch.testing import assert_close
 from torch_ema import ExponentialMovingAverage
 
@@ -22,13 +27,30 @@ _TABLE = tools.AtomicNumberTable([6])
 _CUTOFF = 5.0
 
 
-def test_compiled_training_requires_symbolic_e3nn_release():
-    assert Version(e3nn.__version__) >= Version("0.6.0")
+def test_project_retains_legacy_runtime_contract():
+    config = ConfigParser()
+    config.read(Path(__file__).resolve().parents[2] / "setup.cfg")
+    requirements = tuple(
+        Requirement(line.strip())
+        for line in config["options"]["install_requires"].splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    e3nn_requirement = next(
+        requirement
+        for requirement in requirements
+        if requirement.name.lower() == "e3nn"
+    )
+    torch_requirement = next(
+        requirement
+        for requirement in requirements
+        if requirement.name.lower() == "torch"
+    )
+
+    assert str(e3nn_requirement.specifier) == "==0.4.4"
+    assert str(torch_requirement.specifier) == ">=1.12"
 
 
-def _create_model(
-    device: str = "cpu", enable_cueq: bool = False
-) -> torch.nn.Module:
+def _create_model(device: str = "cpu", enable_cueq: bool = False) -> torch.nn.Module:
     torch_geometric.seed_everything(1702)
     cueq_config = None
     if enable_cueq:
@@ -83,9 +105,39 @@ def _create_batch(num_graphs: int = 2) -> dict[str, torch.Tensor]:
     return next(iter(loader)).to_dict()
 
 
-def _batch_to(
-    batch: dict[str, torch.Tensor], device: str
-) -> dict[str, torch.Tensor]:
+@pytest.mark.parametrize("lmax", range(4))
+def test_legacy_traceable_spherical_harmonics_preserves_e3nn_values(lmax):
+    spherical_harmonics = o3.SphericalHarmonics(
+        list(range(lmax + 1)), normalize=True, normalization="component"
+    )
+    vectors = torch.randn(17, 3, dtype=torch.float64)
+    expected = spherical_harmonics(vectors)
+
+    with compile_training._traceable_legacy_spherical_harmonics(spherical_harmonics):
+        actual = spherical_harmonics(vectors)
+
+    assert_close(actual, expected)
+    assert "forward" not in spherical_harmonics.__dict__
+
+
+def test_legacy_traceable_spherical_harmonics_restores_partial_patch_on_error():
+    supported = o3.SphericalHarmonics(
+        list(range(4)), normalize=True, normalization="component"
+    )
+    unsupported = o3.SphericalHarmonics(
+        list(range(5)), normalize=True, normalization="component"
+    )
+    model = torch.nn.ModuleList((supported, unsupported))
+
+    with pytest.raises(RuntimeError, match="through l=3"):
+        with compile_training._traceable_legacy_spherical_harmonics(model):
+            pytest.fail("unsupported model should fail before tracing")
+
+    assert "forward" not in supported.__dict__
+    assert "forward" not in unsupported.__dict__
+
+
+def _batch_to(batch: dict[str, torch.Tensor], device: str) -> dict[str, torch.Tensor]:
     return {key: value.clone().to(device) for key, value in batch.items()}
 
 
@@ -111,7 +163,9 @@ def _assert_parameter_gradients_close(
             assert_close(eager_parameter.grad, candidate_parameter.grad)
 
 
-def test_compiled_force_stress_training_matches_eager_gradients_and_state_dict():
+def test_compiled_force_stress_training_matches_eager_gradients_and_state_dict(
+    tmp_path,
+):
     with tools.torch_tools.default_dtype(torch.float64):
         eager_model = _create_model()
         candidate_model = _create_model()
@@ -183,6 +237,48 @@ def test_compiled_force_stress_training_matches_eager_gradients_and_state_dict()
 
         assert compiled_model.state_dict().keys() == eager_model.state_dict().keys()
 
+        model_path = tmp_path / "compiled-training-final.model"
+        batch_path = tmp_path / "inference-batch.pt"
+        torch.save(deepcopy(candidate_model), model_path)
+        torch.save(candidate_batch, batch_path)
+        legacy_python = os.environ.get("MACE_LEGACY_PYTHON", sys.executable)
+        subprocess.run(
+            [
+                legacy_python,
+                "-c",
+                """
+import sys
+
+import e3nn
+import torch
+
+model = torch.load(sys.argv[1], map_location="cpu", weights_only=False)
+batch = torch.load(sys.argv[2], map_location="cpu", weights_only=False)
+assert e3nn.__version__ == "0.4.4"
+assert type(model).__module__ == "mace.modules.models"
+assert "CompiledTrainingModel" not in repr(model)
+outputs = model(
+    batch,
+    training=False,
+    compute_force=True,
+    compute_virials=True,
+    compute_stress=True,
+)
+for key in ("energy", "forces", "virials", "stress"):
+    assert torch.isfinite(outputs[key]).all(), key
+assert all(
+    not key.startswith(("module.", "base_model."))
+    for key in model.state_dict()
+)
+""",
+                str(model_path),
+                str(batch_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
 
 def test_compiled_training_can_disable_compilation_without_losing_base_state():
     with tools.torch_tools.default_dtype(torch.float64):
@@ -206,7 +302,9 @@ def test_compiled_training_can_disable_compilation_without_losing_base_state():
 
         assert not compiled_model.is_compiled
         assert compiled_model.compilation_error == "distributed rank fallback"
-        assert [id(parameter) for parameter in compiled_model.parameters()] == parameter_ids
+        assert [
+            id(parameter) for parameter in compiled_model.parameters()
+        ] == parameter_ids
         assert compiled_model.state_dict().keys() == state_keys
 
 
@@ -219,7 +317,12 @@ def test_compiled_training_lazily_falls_back_after_backend_failure():
     with tools.torch_tools.default_dtype(torch.float64):
         model = _create_model()
         batch = _create_batch()
-        output_args = {"energy": True, "forces": True, "virials": False, "stress": False}
+        output_args = {
+            "energy": True,
+            "forces": True,
+            "virials": False,
+            "stress": False,
+        }
         compiled_model = mace_compile.compile_training_model(
             model,
             batch,
@@ -241,7 +344,9 @@ def test_compiled_training_lazily_falls_back_after_backend_failure():
         )
         assert not isinstance(compiled_model.compilation_error, BaseException)
         runtime_warnings = [
-            warning for warning in caught if issubclass(warning.category, RuntimeWarning)
+            warning
+            for warning in caught
+            if issubclass(warning.category, RuntimeWarning)
         ]
         assert len(runtime_warnings) == 1
         assert "synthetic lazy backend failure" in str(runtime_warnings[0].message)
@@ -294,7 +399,9 @@ def test_compiled_training_materializes_backward_before_ddp_and_falls_back():
         )
         assert all(parameter.grad is None for parameter in model.parameters())
         runtime_warnings = [
-            warning for warning in caught if issubclass(warning.category, RuntimeWarning)
+            warning
+            for warning in caught
+            if issubclass(warning.category, RuntimeWarning)
         ]
         assert len(runtime_warnings) == 1
         assert "synthetic lazy backward failure" in str(runtime_warnings[0].message)
@@ -325,9 +432,7 @@ def test_training_fx_prunes_unused_live_state_and_audits_owned_constants():
             dict(model.named_buffers())
         )
         assert all(
-            node.users
-            for node in fx_model.graph.nodes
-            if node.op == "placeholder"
+            node.users for node in fx_model.graph.nodes if node.op == "placeholder"
         )
 
 
@@ -503,16 +608,11 @@ def test_training_fx_preserves_noncanonical_node_attributes():
         runtime_batch["positions"].requires_grad_(True)
         parameters = dict(candidate_model.named_parameters())
         buffers = dict(candidate_model.named_buffers())
-        flat_inputs = [
-            runtime_batch[key] for key in fx_model.meta["mace_input_keys"]
-        ]
+        flat_inputs = [runtime_batch[key] for key in fx_model.meta["mace_input_keys"]]
         flat_inputs.extend(
-            parameters[name]
-            for name in fx_model.meta["mace_parameter_names"]
+            parameters[name] for name in fx_model.meta["mace_parameter_names"]
         )
-        flat_inputs.extend(
-            buffers[name] for name in fx_model.meta["mace_buffer_names"]
-        )
+        flat_inputs.extend(buffers[name] for name in fx_model.meta["mace_buffer_names"])
 
         eager_outputs = eager_model(
             runtime_batch,
@@ -770,9 +870,7 @@ def test_compiled_force_stress_training_cuda_optimizer_and_ema_parity(enable_cue
         for eager_parameter, candidate_parameter in zip(
             eager_model.parameters(), candidate_model.parameters()
         ):
-            assert (eager_parameter.grad is None) == (
-                candidate_parameter.grad is None
-            )
+            assert (eager_parameter.grad is None) == (candidate_parameter.grad is None)
             if eager_parameter.grad is not None:
                 assert_close(eager_parameter.grad, candidate_parameter.grad)
 

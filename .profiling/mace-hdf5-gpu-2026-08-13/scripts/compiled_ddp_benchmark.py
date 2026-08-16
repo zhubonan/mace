@@ -62,6 +62,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--r-max", type=float)
     parser.add_argument("--dump-fx-only", action="store_true")
+    parser.add_argument("--cuda-profiler-capture", action="store_true")
     return parser.parse_args()
 
 
@@ -177,6 +178,21 @@ def _dynamo_counters() -> dict[str, dict[str, int]]:
     }
 
 
+def _start_steady_state_capture(
+    mode: str,
+    cuda_profiler_api: bool = False,
+) -> None:
+    if cuda_profiler_api:
+        torch.cuda.cudart().cudaProfilerStart()
+    torch.cuda.nvtx.range_push(f"{mode}_ddp_steady_state")
+
+
+def _stop_steady_state_capture(cuda_profiler_api: bool = False) -> None:
+    torch.cuda.nvtx.range_pop()
+    if cuda_profiler_api:
+        torch.cuda.cudart().cudaProfilerStop()
+
+
 def _dump_fx_graph(
     model: torch.nn.Module,
     batch: dict[str, torch.Tensor],
@@ -275,9 +291,13 @@ def main() -> None:
         heads=["Default"],
         head="Default",
     )
-    required_samples = args.batch_size * world_size * max(
-        2,
-        args.warmup_steps + args.timed_steps,
+    required_samples = (
+        args.batch_size
+        * world_size
+        * max(
+            2,
+            args.warmup_steps + args.timed_steps,
+        )
     )
     repeats = math.ceil(required_samples / len(source_dataset))
     repeated_dataset = ConcatDataset([source_dataset] * repeats)
@@ -361,6 +381,7 @@ def main() -> None:
     counters_after_warmup = None
     torch.cuda.reset_peak_memory_stats(device)
     total_steps = args.warmup_steps + args.timed_steps
+    steady_state_capture_active = False
     for step in range(total_steps):
         batch = next(iterator).to(device)
         batch_dict = batch.to_dict()
@@ -371,6 +392,12 @@ def main() -> None:
         }
         dist.barrier()
         torch.cuda.synchronize(device)
+        if step == args.warmup_steps:
+            _start_steady_state_capture(
+                args.mode,
+                cuda_profiler_api=args.cuda_profiler_capture,
+            )
+            steady_state_capture_active = True
         started = time.perf_counter()
         with torch.cuda.nvtx.range(f"{args.mode}_ddp_step_{step}"):
             optimizer.zero_grad(set_to_none=True)
@@ -412,6 +439,10 @@ def main() -> None:
             structures += args.batch_size * world_size
         elif step + 1 == args.warmup_steps:
             counters_after_warmup = _dynamo_counters()
+    if steady_state_capture_active:
+        _stop_steady_state_capture(
+            cuda_profiler_api=args.cuda_profiler_capture,
+        )
 
     checksum = _parameter_checksum(model)
     checksums = [None] * world_size

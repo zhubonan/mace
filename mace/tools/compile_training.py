@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import math
+import types
 import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import torch
+from e3nn import o3
 from torch._decomp import core_aten_decompositions
 from torch.func import functional_call
 from torch.fx import GraphModule
@@ -69,6 +72,143 @@ def _fx_duck_shape(enabled: bool):
         yield
     finally:
         config.use_duck_shape = previous
+
+
+def _legacy_spherical_harmonics_lmax3(
+    lmax: int, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor
+) -> torch.Tensor:
+    """Eager form of the e3nn 0.4.4 polynomial used by MACE models."""
+
+    sh_0_0 = torch.ones_like(x)
+    if lmax == 0:
+        return torch.stack((sh_0_0,), dim=-1)
+
+    sh_1_0 = x
+    sh_1_1 = y
+    sh_1_2 = z
+    if lmax == 1:
+        return torch.stack((sh_0_0, sh_1_0, sh_1_1, sh_1_2), dim=-1)
+
+    sh_2_0 = math.sqrt(3.0) * x * z
+    sh_2_1 = math.sqrt(3.0) * x * y
+    y2 = y.pow(2)
+    x2z2 = x.pow(2) + z.pow(2)
+    sh_2_2 = y2 - 0.5 * x2z2
+    sh_2_3 = math.sqrt(3.0) * y * z
+    sh_2_4 = math.sqrt(3.0) / 2.0 * (z.pow(2) - x.pow(2))
+    if lmax == 2:
+        return torch.stack(
+            (
+                sh_0_0,
+                sh_1_0,
+                sh_1_1,
+                sh_1_2,
+                sh_2_0,
+                sh_2_1,
+                sh_2_2,
+                sh_2_3,
+                sh_2_4,
+            ),
+            dim=-1,
+        )
+
+    sh_3_0 = math.sqrt(5.0 / 6.0) * (sh_2_0 * z + sh_2_4 * x)
+    sh_3_1 = math.sqrt(5.0) * sh_2_0 * y
+    sh_3_2 = math.sqrt(3.0 / 8.0) * (4.0 * y2 - x2z2) * x
+    sh_3_3 = 0.5 * y * (2.0 * y2 - 3.0 * x2z2)
+    sh_3_4 = math.sqrt(3.0 / 8.0) * z * (4.0 * y2 - x2z2)
+    sh_3_5 = math.sqrt(5.0) * sh_2_4 * y
+    sh_3_6 = math.sqrt(5.0 / 6.0) * (sh_2_4 * z - sh_2_0 * x)
+    if lmax == 3:
+        return torch.stack(
+            (
+                sh_0_0,
+                sh_1_0,
+                sh_1_1,
+                sh_1_2,
+                sh_2_0,
+                sh_2_1,
+                sh_2_2,
+                sh_2_3,
+                sh_2_4,
+                sh_3_0,
+                sh_3_1,
+                sh_3_2,
+                sh_3_3,
+                sh_3_4,
+                sh_3_5,
+                sh_3_6,
+            ),
+            dim=-1,
+        )
+    raise RuntimeError(
+        "--compile_training with e3nn 0.4.4 supports spherical harmonics " "through l=3"
+    )
+
+
+def _legacy_spherical_harmonics_forward(
+    module: torch.nn.Module, vectors: torch.Tensor
+) -> torch.Tensor:
+    if module.normalize:
+        vectors = torch.nn.functional.normalize(vectors, dim=-1)
+    harmonics = _legacy_spherical_harmonics_lmax3(
+        module._lmax,  # pylint: disable=protected-access
+        vectors[..., 0],
+        vectors[..., 1],
+        vectors[..., 2],
+    )
+    chunks = tuple(
+        harmonics[..., ell * ell : (ell + 1) * (ell + 1)]
+        for ell in module._ls_list  # pylint: disable=protected-access
+    )
+    if module.normalization == "integral":
+        chunks = tuple(
+            chunk * (math.sqrt(2 * ell + 1) / math.sqrt(4 * math.pi))
+            for ell, chunk in zip(
+                module._ls_list, chunks  # pylint: disable=protected-access
+            )
+        )
+    elif module.normalization == "component":
+        chunks = tuple(
+            chunk * math.sqrt(2 * ell + 1)
+            for ell, chunk in zip(
+                module._ls_list, chunks  # pylint: disable=protected-access
+            )
+        )
+    return torch.cat(chunks, dim=-1)
+
+
+@contextlib.contextmanager
+def _traceable_legacy_spherical_harmonics(model: torch.nn.Module):
+    """Temporarily bypass e3nn 0.4.4's shape-specializing ScriptFunction."""
+
+    patched = []
+    try:
+        for module in model.modules():
+            if not isinstance(module, o3.SphericalHarmonics):
+                continue
+            # e3nn 0.6 gives each module a selectable eager ``sph_func``. The
+            # legacy release instead calls a module-global TorchScript function.
+            if hasattr(module, "sph_func"):
+                continue
+            if module._lmax > 3:  # pylint: disable=protected-access
+                raise RuntimeError(
+                    "--compile_training with e3nn 0.4.4 supports spherical "
+                    f"harmonics through l=3, but this model uses l={module._lmax}"
+                )
+            had_instance_forward = "forward" in module.__dict__
+            previous = module.__dict__.get("forward")
+            module.forward = types.MethodType(  # type: ignore[method-assign]
+                _legacy_spherical_harmonics_forward, module
+            )
+            patched.append((module, had_instance_forward, previous))
+        yield
+    finally:
+        for module, had_instance_forward, previous in reversed(patched):
+            if had_instance_forward:
+                module.forward = previous
+            else:
+                del module.forward
 
 
 def _requested_output_keys(output_args: Mapping[str, bool]) -> tuple[str, ...]:
@@ -188,9 +328,7 @@ def _trace_inputs(
     return flat_model, input_keys, parameter_names, buffer_names, inputs
 
 
-def _same_values_ignoring_layout(
-    left: torch.Tensor, right: torch.Tensor
-) -> bool:
+def _same_values_ignoring_layout(left: torch.Tensor, right: torch.Tensor) -> bool:
     if left.dtype != right.dtype or left.numel() != right.numel():
         return False
     left_values = torch.sort(left.detach().flatten().cpu()).values
@@ -203,19 +341,14 @@ def _architecture_source_shape_matches(
     source_name: str,
     source_value: torch.Tensor,
 ) -> bool:
-    if (
-        fx_value.dtype != source_value.dtype
-        or fx_value.numel() != source_value.numel()
-    ):
+    if fx_value.dtype != source_value.dtype or fx_value.numel() != source_value.numel():
         return False
     if ".U_matrix_" not in source_name:
         return fx_value.shape == source_value.shape
 
     # e3nn code generation permutes U-matrix axes and inserts broadcast-only
     # singleton dimensions.  No other dimension change is an audited lowering.
-    fx_dimensions = sorted(
-        dimension for dimension in fx_value.shape if dimension != 1
-    )
+    fx_dimensions = sorted(dimension for dimension in fx_value.shape if dimension != 1)
     source_dimensions = sorted(
         dimension for dimension in source_value.shape if dimension != 1
     )
@@ -267,9 +400,7 @@ def _generated_graph_constant_source(trace_name: str) -> str | None:
 def _is_immutable_architecture_buffer(name: str) -> bool:
     """Identify generated algebra constants that cannot change during training."""
 
-    return ".U_matrix_" in name or (
-        ".graphs." in name and ".graph.c" in name
-    )
+    return ".U_matrix_" in name or (".graphs." in name and ".graph.c" in name)
 
 
 def _classify_architecture_constants(
@@ -342,9 +473,7 @@ def _classify_architecture_constants(
             name
             for name, value in model_buffers
             if not _is_immutable_architecture_buffer(name)
-            if _architecture_source_shape_matches(
-                fx_value, source_name, value
-            )
+            if _architecture_source_shape_matches(fx_value, source_name, value)
             if _same_values_ignoring_layout(fx_value, value)
         )
         if trace_name is None:
@@ -413,9 +542,7 @@ def _prune_unused_placeholders(
             continue
         value = node.meta.get("val")
         if not isinstance(value, torch.Tensor):
-            raise RuntimeError(
-                f"cannot validate unused buffer placeholder {name!r}"
-            )
+            raise RuntimeError(f"cannot validate unused buffer placeholder {name!r}")
         if value.requires_grad:
             raise RuntimeError(
                 f"lowered training graph has unused differentiable buffer {name!r}"
@@ -432,15 +559,11 @@ def _prune_unused_placeholders(
     )
     live_parameter_names = tuple(
         name
-        for name, is_live in zip(
-            parameter_names, keep[input_end:parameter_end]
-        )
+        for name, is_live in zip(parameter_names, keep[input_end:parameter_end])
         if is_live
     )
     live_buffer_names = tuple(
-        name
-        for name, is_live in zip(buffer_names, keep[parameter_end:])
-        if is_live
+        name for name, is_live in zip(buffer_names, keep[parameter_end:]) if is_live
     )
     return live_input_keys, live_parameter_names, live_buffer_names
 
@@ -454,7 +577,7 @@ def _lower_training_fx(
         model, example_batch, output_args
     )
     trace_inputs = tuple(inputs)
-    with _fx_duck_shape(False):
+    with _fx_duck_shape(False), _traceable_legacy_spherical_harmonics(model):
         fx_model = make_fx(
             flat_model,
             decomposition_table=mace_decomp_table(),
@@ -626,9 +749,7 @@ class CompiledTrainingModel(torch.nn.Module):
         if reason is not None:
             self.compilation_error = reason
 
-    def materialize_compiled_backward(
-        self, batch: Mapping[str, torch.Tensor]
-    ) -> None:
+    def materialize_compiled_backward(self, batch: Mapping[str, torch.Tensor]) -> None:
         """Compile the backward graph before DDP installs reducer hooks."""
 
         if not self.is_compiled:
@@ -670,9 +791,7 @@ class CompiledTrainingModel(torch.nn.Module):
         outputs = self.base_model(prepared, **_model_kwargs(self.output_args))
         return {key: outputs[key] for key in self.output_keys}
 
-    def forward(
-        self, batch: Mapping[str, torch.Tensor]
-    ) -> dict[str, torch.Tensor]:
+    def forward(self, batch: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         compiled = self._compiled_ref[0]
         if compiled is None or _has_small_graph_dimension(batch):
             return self._eager_forward(batch)
