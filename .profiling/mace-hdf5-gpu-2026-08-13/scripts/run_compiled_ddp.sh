@@ -54,16 +54,22 @@ extra_args=()
 if [[ "${MACE_DDP_DUMP_FX_ONLY:-0}" == "1" ]]; then
     extra_args+=(--dump-fx-only)
 fi
+if [[ "${MACE_DDP_CUDA_PROFILER_CAPTURE:-0}" == "1" ]]; then
+    extra_args+=(--cuda-profiler-capture)
+fi
 exec "$torchrun_bin" \
     --standalone \
     --nproc-per-node="$world_size" \
     "$script_dir/compiled_ddp_benchmark.py" \
     --mode="$mode" \
+    --backend="${MACE_DDP_BACKEND:-cueq}" \
     --dataset="$dataset" \
     --output-dir="$output_dir" \
     --model-preset="${MACE_DDP_MODEL_PRESET:-small}" \
     --production-ablation="${MACE_DDP_PRODUCTION_ABLATION:-none}" \
+    --derivative-mode="${MACE_DDP_DERIVATIVE_MODE:-positions}" \
     --batch-size="${MACE_DDP_BATCH_SIZE:-64}" \
+    --num-workers="${MACE_DDP_NUM_WORKERS:-0}" \
     --warmup-steps="${MACE_DDP_WARMUP_STEPS:-2}" \
     --timed-steps="${MACE_DDP_TIMED_STEPS:-16}" \
     "${extra_args[@]}"

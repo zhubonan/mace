@@ -213,6 +213,7 @@ def with_oeq_conv_fusion(
     convert node_feats from ir_mul → mul_ir before the oeq forward and
     the output from mul_ir → ir_mul after, since oeq always uses mul_ir.
     """
+    _register_oeq_runtime_buffers(conv_tp)
     conv_tp.original_forward = conv_tp.forward
     if not hasattr(conv_tp, "weight_numel"):
         conv_tp.weight_numel = conv_tp.input_args["problem"].weight_numel
@@ -243,6 +244,54 @@ def with_oeq_conv_fusion(
 
     conv_tp.forward = types.MethodType(forward, conv_tp)
     return conv_tp
+
+
+_OEQ_RUNTIME_BUFFER_NAMES = (
+    "kernel",
+    "workspace_buffer",
+    "dummy_transpose_perm",
+)
+
+
+def _register_oeq_runtime_buffers(
+    conv_tp: torch.nn.Module,
+    *,
+    install_apply_wrapper: bool = True,
+) -> None:
+    """Expose OEQ runtime tensors to tracing without serializing or moving them."""
+
+    for name in _OEQ_RUNTIME_BUFFER_NAMES:
+        tensor = getattr(conv_tp, name)
+        if name in conv_tp._buffers:
+            conv_tp._buffers[name] = tensor
+            conv_tp._non_persistent_buffers_set.add(name)
+        else:
+            delattr(conv_tp, name)
+            conv_tp.register_buffer(name, tensor, persistent=False)
+
+    def _apply_preserving_runtime_buffers(
+        self: torch.nn.Module,
+        fn,
+        recurse: bool = True,
+    ) -> torch.nn.Module:
+        if getattr(self, "_mace_oeq_runtime_apply", False):
+            return torch.nn.Module._apply(self, fn, recurse)
+
+        for name in _OEQ_RUNTIME_BUFFER_NAMES:
+            tensor = self._buffers.pop(name)
+            self._non_persistent_buffers_set.discard(name)
+            setattr(self, name, tensor)
+
+        self._mace_oeq_runtime_apply = True
+        try:
+            result = type(self)._apply(self, fn, recurse)
+        finally:
+            self._mace_oeq_runtime_apply = False
+            _register_oeq_runtime_buffers(self, install_apply_wrapper=False)
+        return result
+
+    if install_apply_wrapper:
+        conv_tp._apply = types.MethodType(_apply_preserving_runtime_buffers, conv_tp)
 
 
 def with_oeq_scatter_sum(conv_tp: torch.nn.Module) -> torch.nn.Module:

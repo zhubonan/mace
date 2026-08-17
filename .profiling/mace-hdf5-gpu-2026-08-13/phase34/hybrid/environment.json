@@ -1,0 +1,11 @@
+{
+  "source_commit": "b8447f72d4180d38b78c34e1c5d94b06dc050ac2",
+  "torch": "2.11.0+cu128",
+  "cuda": "12.8",
+  "e3nn": "0.4.4",
+  "cuequivariance": "0.11.1",
+  "cuequivariance_torch": "0.11.1",
+  "openequivariance": "0.6.8",
+  "device": "NVIDIA GeForce RTX 5090",
+  "default_dtype": "torch.float32"
+}

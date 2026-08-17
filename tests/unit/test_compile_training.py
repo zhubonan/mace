@@ -17,10 +17,13 @@ from torch.testing import assert_close
 from torch_ema import ExponentialMovingAverage
 
 from mace import data, modules, tools
+from mace.cli.convert_e3nn_cueq import run as convert_e3nn_to_cueq
+from mace.cli.convert_e3nn_hybrid import run as convert_e3nn_to_hybrid
 from mace.modules.wrapper_ops import CUET_AVAILABLE, CuEquivarianceConfig
 from mace.tools import compile as mace_compile
 from mace.tools import compile_training
 from mace.tools import torch_geometric
+from tests.helpers import OEQ_AVAILABLE
 
 
 _TABLE = tools.AtomicNumberTable([6])
@@ -151,7 +154,11 @@ def _objective(outputs: dict[str, torch.Tensor]) -> torch.Tensor:
 
 
 def _assert_parameter_gradients_close(
-    eager_model: torch.nn.Module, candidate_model: torch.nn.Module
+    eager_model: torch.nn.Module,
+    candidate_model: torch.nn.Module,
+    *,
+    rtol: float | None = None,
+    atol: float | None = None,
 ) -> None:
     eager_parameters = dict(eager_model.named_parameters())
     candidate_parameters = dict(candidate_model.named_parameters())
@@ -160,7 +167,35 @@ def _assert_parameter_gradients_close(
         candidate_parameter = candidate_parameters[name]
         assert (eager_parameter.grad is None) == (candidate_parameter.grad is None)
         if eager_parameter.grad is not None:
-            assert_close(eager_parameter.grad, candidate_parameter.grad)
+            try:
+                assert_close(
+                    eager_parameter.grad,
+                    candidate_parameter.grad,
+                    rtol=rtol,
+                    atol=atol,
+                )
+            except AssertionError as error:
+                raise AssertionError(
+                    f"parameter gradient mismatch for {name}: {error}"
+                ) from error
+
+
+def _run_training_fx(
+    fx_model: torch.fx.GraphModule,
+    model: torch.nn.Module,
+    batch: dict[str, torch.Tensor],
+    output_args: dict[str, bool],
+) -> dict[str, torch.Tensor]:
+    prepared = compile_training._prepare_batch(batch, output_args)
+    parameters = dict(model.named_parameters())
+    buffers = dict(model.named_buffers())
+    flat_inputs = [prepared[key] for key in fx_model.meta["mace_input_keys"]]
+    flat_inputs.extend(
+        parameters[name] for name in fx_model.meta["mace_parameter_names"]
+    )
+    flat_inputs.extend(buffers[name] for name in fx_model.meta["mace_buffer_names"])
+    flat_outputs = fx_model(*flat_inputs)
+    return dict(zip(fx_model.meta["mace_output_keys"], flat_outputs))
 
 
 def test_compiled_force_stress_training_matches_eager_gradients_and_state_dict(
@@ -709,7 +744,7 @@ def test_training_fx_reports_first_fx_divergence(monkeypatch):
     monkeypatch.setattr(
         compile_training,
         "_lower_training_fx",
-        lambda model, batch, output_args: next(lowered),
+        lambda model, batch, output_args, **kwargs: next(lowered),
     )
     first = _create_batch(num_graphs=2)
     second = _create_batch(num_graphs=3)
@@ -811,6 +846,103 @@ def test_missing_runtime_graph_input_does_not_disable_compiled_variant():
         assert compiled_model.compilation_error is None
 
 
+def test_internal_compiled_training_accepts_private_edge_derivative_mode():
+    with tools.torch_tools.default_dtype(torch.float64):
+        model = _create_model()
+        trace_batch = _create_batch()
+        validation_batch = _create_batch(num_graphs=3)
+        edge_compiled = compile_training.compile_training_model(
+            model,
+            trace_batch,
+            output_args={
+                "energy": True,
+                "forces": True,
+                "virials": True,
+                "stress": True,
+            },
+            mode="default",
+            dynamic=True,
+            validation_batch=validation_batch,
+            derivative_mode="edges",
+        )
+
+        assert edge_compiled.is_compiled, edge_compiled.compilation_error
+
+
+def test_internal_compiled_training_rejects_unknown_derivative_mode():
+    with tools.torch_tools.default_dtype(torch.float64):
+        with pytest.raises(ValueError, match="derivative_mode"):
+            compile_training.compile_training_model(
+                _create_model(),
+                _create_batch(),
+                output_args={"energy": True, "forces": True},
+                dynamic=False,
+                derivative_mode="unknown",
+            )
+
+
+def test_public_compiled_training_api_does_not_expose_edge_derivative_mode():
+    with pytest.raises(TypeError, match="derivative_mode"):
+        mace_compile.compile_training_model(
+            _create_model(),
+            _create_batch(),
+            output_args={"energy": True, "forces": True},
+            derivative_mode="edges",
+        )
+
+
+def test_default_internal_compiled_training_remains_position_based():
+    with tools.torch_tools.default_dtype(torch.float64):
+        implicit = compile_training.make_training_fx(
+            _create_model(),
+            _create_batch(),
+            output_args={"energy": True, "forces": True},
+        )
+        explicit = compile_training.make_training_fx(
+            _create_model(),
+            _create_batch(),
+            output_args={"energy": True, "forces": True},
+            derivative_mode="positions",
+        )
+
+        assert implicit.code == explicit.code
+
+
+def test_edge_derivative_facade_fallback_uses_canonical_eager_model():
+    with tools.torch_tools.default_dtype(torch.float64):
+        model = _create_model()
+        batch = _create_batch()
+        facade = compile_training.compile_training_model(
+            model,
+            batch,
+            output_args={
+                "energy": True,
+                "forces": True,
+                "virials": True,
+                "stress": True,
+            },
+            dynamic=True,
+            validation_batch=_create_batch(num_graphs=3),
+            derivative_mode="edges",
+        )
+        assert facade.is_compiled, facade.compilation_error
+        reference = model(
+            _batch_to(batch, "cpu"),
+            training=True,
+            compute_force=True,
+            compute_virials=True,
+            compute_stress=True,
+        )
+
+        facade.disable_compilation("test fallback")
+        actual = facade(_batch_to(batch, "cpu"))
+
+        assert not facade.is_compiled
+        for key in ("energy", "forces", "virials", "stress"):
+            assert_close(reference[key], actual[key])
+        assert facade.state_dict().keys() == model.state_dict().keys()
+
+
 @pytest.mark.gpu
 @pytest.mark.parametrize(
     "enable_cueq", [False, pytest.param(True, marks=pytest.mark.cueq)]
@@ -886,3 +1018,438 @@ def test_compiled_force_stress_training_cuda_optimizer_and_ema_parity(enable_cue
             eager_ema.shadow_params, candidate_ema.shadow_params
         ):
             assert_close(eager_shadow, candidate_shadow)
+
+
+@pytest.mark.gpu
+@pytest.mark.cueq
+@pytest.mark.oeq
+def test_hybrid_oeq_runtime_tensors_are_nonpersistent_buffers_cuda():
+    if not torch.cuda.is_available() or not CUET_AVAILABLE or not OEQ_AVAILABLE:
+        pytest.skip("hybrid CUDA dependencies are unavailable")
+
+    with tools.torch_tools.default_dtype(torch.float32):
+        hybrid = convert_e3nn_to_hybrid(
+            _create_model(), device="cuda", return_model=True
+        ).cuda()
+
+    state_keys = set(hybrid.state_dict())
+    oeq_modules = [
+        (name, module)
+        for name, module in hybrid.named_modules()
+        if module.__class__.__module__.startswith("openequivariance.")
+        and module.__class__.__name__ == "TensorProductConv"
+    ]
+    assert oeq_modules
+    for module_name, module in oeq_modules:
+        apply_method = module._apply
+        buffers = dict(module.named_buffers(recurse=False))
+        for buffer_name in ("kernel", "workspace_buffer", "dummy_transpose_perm"):
+            assert buffers[buffer_name] is getattr(module, buffer_name)
+            assert buffer_name in module._non_persistent_buffers_set
+            assert f"{module_name}.{buffer_name}" not in state_keys
+        assert buffers["kernel"].device.type == "cpu"
+        assert buffers["workspace_buffer"].device.type == "cuda"
+        assert buffers["dummy_transpose_perm"].device.type == "cuda"
+        module.cuda()
+        assert module._apply.__func__ is apply_method.__func__
+        assert module.kernel.device.type == "cpu"
+        assert module.workspace_buffer.device.type == "cuda"
+        assert module.dummy_transpose_perm.device.type == "cuda"
+
+
+@pytest.mark.gpu
+@pytest.mark.cueq
+@pytest.mark.oeq
+def test_hybrid_full_force_stress_optimizer_parity_cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("cuda is not available")
+    if not CUET_AVAILABLE or not OEQ_AVAILABLE:
+        pytest.skip("hybrid dependencies are not installed")
+
+    with tools.torch_tools.default_dtype(torch.float32):
+        source = _create_model()
+        baseline = convert_e3nn_to_cueq(
+            deepcopy(source), device="cuda", conv_fusion=False
+        ).cuda()
+        hybrid = convert_e3nn_to_hybrid(
+            deepcopy(source), device="cuda", return_model=True
+        ).cuda()
+        baseline_batch = _batch_to(_create_batch(), "cuda")
+        hybrid_batch = _batch_to(baseline_batch, "cuda")
+        baseline_optimizer = torch.optim.Adam(
+            baseline.parameters(), lr=1.0e-3, amsgrad=True
+        )
+        hybrid_optimizer = torch.optim.Adam(
+            hybrid.parameters(), lr=1.0e-3, amsgrad=True
+        )
+
+        baseline_outputs = baseline(
+            baseline_batch,
+            training=True,
+            compute_force=True,
+            compute_virials=True,
+            compute_stress=True,
+        )
+        hybrid_outputs = hybrid(
+            hybrid_batch,
+            training=True,
+            compute_force=True,
+            compute_virials=True,
+            compute_stress=True,
+        )
+        for key in ("energy", "forces", "virials", "stress"):
+            assert_close(baseline_outputs[key], hybrid_outputs[key])
+
+        _objective(baseline_outputs).backward()
+        _objective(hybrid_outputs).backward()
+        _assert_parameter_gradients_close(baseline, hybrid)
+        for name, parameter in baseline.named_parameters():
+            assert parameter.grad is not None, name
+        baseline_optimizer.step()
+        hybrid_optimizer.step()
+        baseline_parameters = dict(baseline.named_parameters())
+        hybrid_parameters = dict(hybrid.named_parameters())
+        assert baseline_parameters.keys() == hybrid_parameters.keys()
+        for name, baseline_parameter in baseline_parameters.items():
+            hybrid_parameter = hybrid_parameters[name]
+            assert_close(baseline_parameter, hybrid_parameter)
+            baseline_state = baseline_optimizer.state[baseline_parameter]
+            hybrid_state = hybrid_optimizer.state[hybrid_parameter]
+            assert baseline_state.keys() == hybrid_state.keys()
+            for state_name, baseline_value in baseline_state.items():
+                hybrid_value = hybrid_state[state_name]
+                if isinstance(baseline_value, torch.Tensor):
+                    assert_close(baseline_value, hybrid_value)
+                else:
+                    assert baseline_value == hybrid_value
+
+
+@pytest.mark.gpu
+@pytest.mark.cueq
+@pytest.mark.oeq
+def test_hybrid_compiled_force_stress_dynamic_update_parity_cuda():
+    if not torch.cuda.is_available() or not CUET_AVAILABLE or not OEQ_AVAILABLE:
+        pytest.skip("hybrid CUDA dependencies are unavailable")
+
+    with tools.torch_tools.default_dtype(torch.float32):
+        source = _create_model()
+        reference = convert_e3nn_to_hybrid(
+            deepcopy(source), device="cuda", return_model=True
+        ).cuda()
+        candidate = convert_e3nn_to_hybrid(
+            deepcopy(source), device="cuda", return_model=True
+        ).cuda()
+        trace_batch = _batch_to(_create_batch(num_graphs=2), "cuda")
+        validation_batch = _batch_to(_create_batch(num_graphs=3), "cuda")
+        output_args = {
+            "energy": True,
+            "forces": True,
+            "virials": True,
+            "stress": True,
+        }
+        compiled = mace_compile.compile_training_model(
+            candidate,
+            trace_batch,
+            output_args=output_args,
+            mode="default",
+            dynamic=True,
+            validation_batch=validation_batch,
+        )
+        assert compiled.is_compiled, compiled.compilation_error
+
+        for raw_batch in (trace_batch, validation_batch):
+            reference_batch = _batch_to(raw_batch, "cuda")
+            candidate_batch = _batch_to(raw_batch, "cuda")
+            reference_outputs = reference(
+                reference_batch,
+                training=True,
+                compute_force=True,
+                compute_virials=True,
+                compute_stress=True,
+            )
+            candidate_outputs = compiled(candidate_batch)
+            for key in ("energy", "forces", "virials", "stress"):
+                assert_close(reference_outputs[key], candidate_outputs[key])
+            _objective(reference_outputs).backward()
+            _objective(candidate_outputs).backward()
+            _assert_parameter_gradients_close(
+                reference,
+                candidate,
+                rtol=1.0e-5,
+                atol=2.0e-5,
+            )
+            for model in (reference, candidate):
+                model.zero_grad(set_to_none=True)
+            assert compiled.is_compiled, compiled.compilation_error
+
+        graphs_after_dynamic_shapes = torch._dynamo.utils.counters["stats"][
+            "unique_graphs"
+        ]
+        compiled(_batch_to(trace_batch, "cuda"))
+        compiled(_batch_to(validation_batch, "cuda"))
+        assert (
+            torch._dynamo.utils.counters["stats"]["unique_graphs"]
+            == graphs_after_dynamic_shapes
+        )
+
+        reference_optimizer = torch.optim.Adam(
+            reference.parameters(), lr=1.0e-3, amsgrad=True
+        )
+        candidate_optimizer = torch.optim.Adam(
+            candidate.parameters(), lr=1.0e-3, amsgrad=True
+        )
+        reference_batch = _batch_to(validation_batch, "cuda")
+        candidate_batch = _batch_to(validation_batch, "cuda")
+        reference_outputs = reference(
+            reference_batch,
+            training=True,
+            compute_force=True,
+            compute_virials=True,
+            compute_stress=True,
+        )
+        candidate_outputs = compiled(candidate_batch)
+        reference_loss = _objective(reference_outputs)
+        candidate_loss = _objective(candidate_outputs)
+        assert_close(reference_loss, candidate_loss)
+        reference_loss.backward()
+        candidate_loss.backward()
+        _assert_parameter_gradients_close(
+            reference,
+            candidate,
+            rtol=1.0e-5,
+            atol=2.0e-5,
+        )
+        reference_optimizer.step()
+        candidate_optimizer.step()
+
+        reference_parameters = dict(reference.named_parameters())
+        candidate_parameters = dict(candidate.named_parameters())
+        assert reference_parameters.keys() == candidate_parameters.keys()
+        for name, reference_parameter in reference_parameters.items():
+            candidate_parameter = candidate_parameters[name]
+            assert_close(reference_parameter, candidate_parameter)
+            reference_state = reference_optimizer.state[reference_parameter]
+            candidate_state = candidate_optimizer.state[candidate_parameter]
+            assert reference_state.keys() == candidate_state.keys()
+            for state_name, reference_value in reference_state.items():
+                candidate_value = candidate_state[state_name]
+                if isinstance(reference_value, torch.Tensor):
+                    assert_close(reference_value, candidate_value)
+                else:
+                    assert reference_value == candidate_value
+        assert compiled.is_compiled, compiled.compilation_error
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(
+    "enable_cueq", [False, pytest.param(True, marks=pytest.mark.cueq)]
+)
+def test_edge_derivative_compiled_cuda_optimizer_and_ema_parity(enable_cueq):
+    if not torch.cuda.is_available():
+        pytest.skip("cuda is not available")
+    if enable_cueq and not CUET_AVAILABLE:
+        pytest.skip("cuequivariance is not installed")
+
+    with tools.torch_tools.default_dtype(torch.float32):
+        reference = _create_model().cuda()
+        candidate = _create_model().cuda()
+        if enable_cueq:
+            reference = convert_e3nn_to_cueq(
+                reference, device="cuda", conv_fusion=False
+            ).cuda()
+            candidate = convert_e3nn_to_cueq(
+                candidate, device="cuda", conv_fusion=False
+            ).cuda()
+        trace_batch = _batch_to(_create_batch(num_graphs=2), "cuda")
+        validation_batch = _batch_to(_create_batch(num_graphs=3), "cuda")
+        output_args = {
+            "energy": True,
+            "forces": True,
+            "virials": True,
+            "stress": True,
+        }
+        facade = compile_training.compile_training_model(
+            candidate,
+            trace_batch,
+            output_args=output_args,
+            mode="default",
+            dynamic=True,
+            validation_batch=validation_batch,
+            derivative_mode="edges",
+        )
+        assert facade.is_compiled, facade.compilation_error
+        reference_optimizer = torch.optim.Adam(
+            reference.parameters(), lr=1.0e-3, amsgrad=True
+        )
+        candidate_optimizer = torch.optim.Adam(
+            candidate.parameters(), lr=1.0e-3, amsgrad=True
+        )
+        reference_ema = ExponentialMovingAverage(reference.parameters(), decay=0.9)
+        candidate_ema = ExponentialMovingAverage(candidate.parameters(), decay=0.9)
+        for raw_batch in (trace_batch, validation_batch):
+            reference_batch = _batch_to(raw_batch, "cuda")
+            candidate_batch = _batch_to(raw_batch, "cuda")
+            reference_outputs = reference(
+                reference_batch,
+                training=True,
+                compute_force=True,
+                compute_virials=True,
+                compute_stress=True,
+            )
+            candidate_outputs = facade(candidate_batch)
+            assert facade.is_compiled, facade.compilation_error
+            for key in ("energy", "forces", "virials", "stress"):
+                assert_close(reference_outputs[key], candidate_outputs[key])
+            reference_loss = _objective(reference_outputs)
+            candidate_loss = _objective(candidate_outputs)
+            assert_close(reference_loss, candidate_loss)
+            reference_loss.backward()
+            candidate_loss.backward()
+            _assert_parameter_gradients_close(
+                reference,
+                candidate,
+                rtol=1.0e-5,
+                atol=2.0e-5,
+            )
+            for model in (reference, candidate):
+                model.zero_grad(set_to_none=True)
+
+        graphs_after_dynamic_shapes = torch._dynamo.utils.counters["stats"][
+            "unique_graphs"
+        ]
+        facade(_batch_to(trace_batch, "cuda"))
+        facade(_batch_to(validation_batch, "cuda"))
+        assert (
+            torch._dynamo.utils.counters["stats"]["unique_graphs"]
+            == graphs_after_dynamic_shapes
+        )
+        reference_outputs = reference(
+            _batch_to(validation_batch, "cuda"),
+            training=True,
+            compute_force=True,
+            compute_virials=True,
+            compute_stress=True,
+        )
+        candidate_outputs = facade(_batch_to(validation_batch, "cuda"))
+        _objective(reference_outputs).backward()
+        _objective(candidate_outputs).backward()
+        _assert_parameter_gradients_close(
+            reference,
+            candidate,
+            rtol=1.0e-5,
+            atol=2.0e-5,
+        )
+        reference_optimizer.step()
+        candidate_optimizer.step()
+        reference_ema.update()
+        candidate_ema.update()
+
+        reference_parameters = dict(reference.named_parameters())
+        candidate_parameters = dict(candidate.named_parameters())
+        assert reference_parameters.keys() == candidate_parameters.keys()
+        for name, reference_parameter in reference_parameters.items():
+            candidate_parameter = candidate_parameters[name]
+            assert_close(reference_parameter, candidate_parameter)
+            reference_state = reference_optimizer.state[reference_parameter]
+            candidate_state = candidate_optimizer.state[candidate_parameter]
+            assert reference_state.keys() == candidate_state.keys()
+            for state_name, reference_value in reference_state.items():
+                candidate_value = candidate_state[state_name]
+                if isinstance(reference_value, torch.Tensor):
+                    assert_close(reference_value, candidate_value)
+                else:
+                    assert reference_value == candidate_value
+        for reference_shadow, candidate_shadow in zip(
+            reference_ema.shadow_params, candidate_ema.shadow_params
+        ):
+            assert_close(reference_shadow, candidate_shadow)
+        assert facade.state_dict().keys() == candidate.state_dict().keys()
+        assert facade.is_compiled, facade.compilation_error
+
+
+@pytest.mark.gpu
+def test_edge_derivative_uncompiled_fx_gradient_parity_cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("cuda is not available")
+
+    with tools.torch_tools.default_dtype(torch.float32):
+        reference = _create_model().cuda()
+        candidate = _create_model().cuda()
+        trace_batch = _batch_to(_create_batch(num_graphs=2), "cuda")
+        validation_batch = _batch_to(_create_batch(num_graphs=3), "cuda")
+        output_args = {
+            "energy": True,
+            "forces": True,
+            "virials": True,
+            "stress": True,
+        }
+        fx_model = compile_training.make_training_fx(
+            candidate,
+            trace_batch,
+            output_args,
+            validation_batch=validation_batch,
+            derivative_mode="edges",
+        )
+        reference_outputs = reference(
+            _batch_to(trace_batch, "cuda"),
+            training=True,
+            compute_force=True,
+            compute_virials=True,
+            compute_stress=True,
+        )
+        candidate_outputs = _run_training_fx(
+            fx_model,
+            candidate,
+            _batch_to(trace_batch, "cuda"),
+            output_args,
+        )
+        for key in ("energy", "forces", "virials", "stress"):
+            assert_close(reference_outputs[key], candidate_outputs[key])
+        _objective(reference_outputs).backward()
+        _objective(candidate_outputs).backward()
+        _assert_parameter_gradients_close(reference, candidate)
+
+
+@pytest.mark.gpu
+def test_edge_derivative_compiled_cuda_matches_position_compiled_gradients():
+    if not torch.cuda.is_available():
+        pytest.skip("cuda is not available")
+
+    with tools.torch_tools.default_dtype(torch.float32):
+        position_model = _create_model().cuda()
+        edge_model = _create_model().cuda()
+        trace_batch = _batch_to(_create_batch(num_graphs=2), "cuda")
+        validation_batch = _batch_to(_create_batch(num_graphs=3), "cuda")
+        output_args = {
+            "energy": True,
+            "forces": True,
+            "virials": True,
+            "stress": True,
+        }
+        position_facade = compile_training.compile_training_model(
+            position_model,
+            trace_batch,
+            output_args=output_args,
+            mode="default",
+            dynamic=True,
+            validation_batch=validation_batch,
+            derivative_mode="positions",
+        )
+        edge_facade = compile_training.compile_training_model(
+            edge_model,
+            trace_batch,
+            output_args=output_args,
+            mode="default",
+            dynamic=True,
+            validation_batch=validation_batch,
+            derivative_mode="edges",
+        )
+        assert position_facade.is_compiled, position_facade.compilation_error
+        assert edge_facade.is_compiled, edge_facade.compilation_error
+        position_outputs = position_facade(_batch_to(trace_batch, "cuda"))
+        edge_outputs = edge_facade(_batch_to(trace_batch, "cuda"))
+        for key in ("energy", "forces", "virials", "stress"):
+            assert_close(position_outputs[key], edge_outputs[key])
+        _objective(position_outputs).backward()
+        _objective(edge_outputs).backward()
+        _assert_parameter_gradients_close(position_model, edge_model)

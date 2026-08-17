@@ -1,0 +1,273 @@
+{
+  "rank": 0,
+  "world_size": 1,
+  "mode": "compiled",
+  "backend": "hybrid",
+  "derivative_mode": "positions",
+  "torch_version": "2.11.0+cu128",
+  "cuda_version": "12.8",
+  "device": "NVIDIA GeForce RTX 5090",
+  "dataset": "/mnt/hdd2/bonan/omat-training/full-omat24-native-hdf5-pilot-1000/archives/rattled-1000-subsampled/shards/omat-000000000-000001000.h5",
+  "model_preset": "production",
+  "production_ablation": "none",
+  "r_max": 6.0,
+  "parameter_count": 9063204,
+  "batch_size_per_rank": 128,
+  "num_workers": 4,
+  "warmup_steps": 8,
+  "timed_steps": 24,
+  "step_times_ms": [
+    22.371395025402308,
+    21.960413025226444,
+    22.008767002262175,
+    24.032899003941566,
+    22.921700030565262,
+    21.5683130081743,
+    23.088011017534882,
+    25.23011900484562,
+    23.11718399869278,
+    22.09773298818618,
+    30.98441701149568,
+    26.331755972933024,
+    22.99829595722258,
+    21.636927966028452,
+    21.96030499180779,
+    30.99800500785932,
+    23.185437021311373,
+    21.78900397848338,
+    23.341477033682168,
+    22.70289300940931,
+    22.50504499534145,
+    21.773547981865704,
+    22.682228009216487,
+    23.339496983680874
+  ],
+  "median_step_ms": 22.812296519987285,
+  "p95_step_ms": 30.28651785571127,
+  "structures_per_second": 5440.775712687265,
+  "losses": [
+    141.32867431640625,
+    177.0788116455078,
+    141.81443786621094,
+    143.8153533935547,
+    121.09861755371094,
+    129.6472625732422,
+    148.38885498046875,
+    141.32290649414062,
+    139.4285888671875,
+    151.65663146972656,
+    144.1925811767578,
+    147.9971923828125,
+    144.26942443847656,
+    132.7626190185547,
+    140.82945251464844,
+    149.109375,
+    124.3121337890625,
+    137.1085662841797,
+    132.10044860839844,
+    138.49290466308594,
+    117.41376495361328,
+    120.4125747680664,
+    140.17649841308594,
+    141.07411193847656
+  ],
+  "batch_shapes": [
+    {
+      "structures": 128,
+      "atoms": 1626,
+      "edges": 59016
+    },
+    {
+      "structures": 128,
+      "atoms": 1597,
+      "edges": 59882
+    },
+    {
+      "structures": 128,
+      "atoms": 1598,
+      "edges": 58452
+    },
+    {
+      "structures": 128,
+      "atoms": 1582,
+      "edges": 60724
+    },
+    {
+      "structures": 128,
+      "atoms": 1576,
+      "edges": 57156
+    },
+    {
+      "structures": 128,
+      "atoms": 1608,
+      "edges": 56824
+    },
+    {
+      "structures": 128,
+      "atoms": 1627,
+      "edges": 61166
+    },
+    {
+      "structures": 128,
+      "atoms": 1619,
+      "edges": 63424
+    },
+    {
+      "structures": 128,
+      "atoms": 1628,
+      "edges": 60852
+    },
+    {
+      "structures": 128,
+      "atoms": 1658,
+      "edges": 60166
+    },
+    {
+      "structures": 128,
+      "atoms": 1643,
+      "edges": 59602
+    },
+    {
+      "structures": 128,
+      "atoms": 1628,
+      "edges": 59662
+    },
+    {
+      "structures": 128,
+      "atoms": 1648,
+      "edges": 59228
+    },
+    {
+      "structures": 128,
+      "atoms": 1614,
+      "edges": 57516
+    },
+    {
+      "structures": 128,
+      "atoms": 1628,
+      "edges": 58204
+    },
+    {
+      "structures": 128,
+      "atoms": 1649,
+      "edges": 59104
+    },
+    {
+      "structures": 128,
+      "atoms": 1603,
+      "edges": 60908
+    },
+    {
+      "structures": 128,
+      "atoms": 1625,
+      "edges": 58226
+    },
+    {
+      "structures": 128,
+      "atoms": 1621,
+      "edges": 57158
+    },
+    {
+      "structures": 128,
+      "atoms": 1586,
+      "edges": 55288
+    },
+    {
+      "structures": 128,
+      "atoms": 1628,
+      "edges": 57396
+    },
+    {
+      "structures": 128,
+      "atoms": 1616,
+      "edges": 57008
+    },
+    {
+      "structures": 128,
+      "atoms": 1643,
+      "edges": 59152
+    },
+    {
+      "structures": 128,
+      "atoms": 1622,
+      "edges": 60630
+    }
+  ],
+  "peak_memory_bytes": 3280466944,
+  "is_compiled": true,
+  "compilation_error": null,
+  "compile_wall_seconds": 35.20870559697505,
+  "validation_batch_shape": {
+    "structures": 128,
+    "atoms": 1646,
+    "edges": 58702
+  },
+  "dynamic_shape_signatures": [
+    [
+      128,
+      1610,
+      61670
+    ],
+    [
+      128,
+      1646,
+      58702
+    ]
+  ],
+  "dynamo_counters_after_warmup": {
+    "frames": {
+      "total": 1,
+      "ok": 1
+    },
+    "stats": {
+      "calls_captured": 2575,
+      "unique_graphs": 1
+    },
+    "inductor": {
+      "triton_bundler_load_static_autotuner": 236,
+      "async_compile_cache_miss": 711,
+      "async_compile_cache_hit": 473,
+      "pattern_matcher_count": 3,
+      "pattern_matcher_nodes": 6,
+      "extern_calls": 326,
+      "fxgraph_cache_hit": 2,
+      "benchmarking.InductorBenchmarker.benchmark": 8,
+      "benchmarking.InductorBenchmarker.benchmark_gpu": 8
+    },
+    "aot_autograd": {
+      "total": 1,
+      "autograd_cache_hit": 1,
+      "ok": 1
+    }
+  },
+  "dynamo_counters_final": {
+    "frames": {
+      "total": 1,
+      "ok": 1
+    },
+    "stats": {
+      "calls_captured": 2575,
+      "unique_graphs": 1
+    },
+    "inductor": {
+      "triton_bundler_load_static_autotuner": 236,
+      "async_compile_cache_miss": 711,
+      "async_compile_cache_hit": 473,
+      "pattern_matcher_count": 3,
+      "pattern_matcher_nodes": 6,
+      "extern_calls": 326,
+      "fxgraph_cache_hit": 2,
+      "benchmarking.InductorBenchmarker.benchmark": 8,
+      "benchmarking.InductorBenchmarker.benchmark_gpu": 8
+    },
+    "aot_autograd": {
+      "total": 1,
+      "autograd_cache_hit": 1,
+      "ok": 1
+    }
+  },
+  "parameter_checksum": "e52059366565ecf6c2d990778e32d87e0e016b081a567df0b52afba6b6e172c6",
+  "rank_checksums": [
+    "e52059366565ecf6c2d990778e32d87e0e016b081a567df0b52afba6b6e172c6"
+  ]
+}

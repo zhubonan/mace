@@ -26,6 +26,7 @@ from torch_ema import ExponentialMovingAverage
 
 from mace import data, modules, tools
 from mace.cli.convert_e3nn_cueq import run as convert_e3nn_to_cueq
+from mace.cli.convert_e3nn_hybrid import run as convert_e3nn_to_hybrid
 from mace.tools import compile as mace_compile
 from mace.tools import torch_geometric
 
@@ -36,9 +37,16 @@ train_tools = importlib.import_module("mace.tools.train")
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("eager", "compiled"), required=True)
+    parser.add_argument(
+        "--backend",
+        choices=("cueq", "hybrid"),
+        default="cueq",
+        help="Experimental acceleration backend to profile.",
+    )
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--warmup-steps", type=int, default=2)
     parser.add_argument("--timed-steps", type=int, default=16)
     parser.add_argument(
@@ -63,6 +71,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--r-max", type=float)
     parser.add_argument("--dump-fx-only", action="store_true")
     parser.add_argument("--cuda-profiler-capture", action="store_true")
+    parser.add_argument(
+        "--derivative-mode",
+        choices=("positions", "edges"),
+        default="positions",
+        help="Private compiled-training derivative lowering to profile.",
+    )
     return parser.parse_args()
 
 
@@ -81,6 +95,7 @@ def _build_model(
     device: torch.device,
     model_preset: str,
     production_ablation: str,
+    backend: str = "cueq",
     compile_training: bool = False,
 ) -> torch.nn.Module:
     torch_geometric.seed_everything(1702)
@@ -155,6 +170,12 @@ def _build_model(
         mace_compile.disable_e3nn_codegen() if compile_training else nullcontext()
     )
     with conversion_context:
+        if backend == "hybrid":
+            return convert_e3nn_to_hybrid(
+                model,
+                device=device,
+                return_model=True,
+            )
         return convert_e3nn_to_cueq(
             model,
             device=device,
@@ -199,6 +220,7 @@ def _dump_fx_graph(
     validation_batch: dict[str, torch.Tensor],
     output_args: dict[str, bool],
     output_dir: Path,
+    derivative_mode: str,
 ) -> None:
     from mace.tools.compile_training import make_training_fx
 
@@ -207,6 +229,7 @@ def _dump_fx_graph(
         batch,
         output_args,
         validation_batch=validation_batch,
+        derivative_mode=derivative_mode,
     )
     (output_dir / "training_fx.py").write_text(
         fx_model.code,
@@ -255,6 +278,8 @@ def main() -> None:
     args = _parse_args()
     if not args.dataset.is_file():
         raise FileNotFoundError(args.dataset)
+    if args.mode != "compiled" and args.derivative_mode != "positions":
+        raise ValueError("--derivative-mode=edges requires --mode=compiled")
 
     local_rank = int(os.environ["LOCAL_RANK"])
     requested_world_size = int(os.environ["WORLD_SIZE"])
@@ -314,8 +339,9 @@ def main() -> None:
         batch_size=args.batch_size,
         sampler=sampler,
         drop_last=True,
-        num_workers=0,
+        num_workers=args.num_workers,
         pin_memory=True,
+        persistent_workers=args.num_workers > 0,
     )
 
     model = _build_model(
@@ -324,6 +350,7 @@ def main() -> None:
         device,
         args.model_preset,
         args.production_ablation,
+        backend=args.backend,
         compile_training=args.mode == "compiled",
     )
     optimizer = torch.optim.Adam(
@@ -352,17 +379,33 @@ def main() -> None:
                 validation_batch.to_dict(),
                 output_args,
                 args.output_dir,
+                args.derivative_mode,
             )
             return
-        compiled_facade = mace_compile.compile_training_model(
+        if args.derivative_mode == "edges":
+            from mace.tools.compile_training import (
+                compile_training_model as compile_internal,
+            )
+
+            compile_model = compile_internal
+        else:
+            compile_model = mace_compile.compile_training_model
+        compile_started = time.perf_counter()
+        compiled_facade = compile_model(
             model,
             first_batch.to_dict(),
             output_args=output_args,
             mode="default",
             dynamic=True,
             validation_batch=validation_batch.to_dict(),
+            **(
+                {"derivative_mode": args.derivative_mode}
+                if args.derivative_mode == "edges"
+                else {}
+            ),
         )
         compiled_facade.materialize_compiled_backward(first_batch.to_dict())
+        compile_wall_seconds = time.perf_counter() - compile_started
         compiled_facade = train_tools._synchronize_compiled_training_state(
             compiled_facade,
             device=device,
@@ -371,6 +414,7 @@ def main() -> None:
         forward_model = DistributedDataParallel(
             compiled_facade,
             device_ids=[local_rank],
+            broadcast_buffers=False,
         )
         iterator = itertools.chain([first_batch, validation_batch], iterator)
 
@@ -465,6 +509,8 @@ def main() -> None:
         "rank": rank,
         "world_size": world_size,
         "mode": args.mode,
+        "backend": args.backend,
+        "derivative_mode": args.derivative_mode,
         "torch_version": torch.__version__,
         "cuda_version": torch.version.cuda,
         "device": torch.cuda.get_device_name(local_rank),
@@ -474,16 +520,21 @@ def main() -> None:
         "r_max": r_max,
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
         "batch_size_per_rank": args.batch_size,
+        "num_workers": args.num_workers,
         "warmup_steps": args.warmup_steps,
         "timed_steps": args.timed_steps,
         "step_times_ms": step_times_ms,
         "median_step_ms": statistics.median(step_times_ms),
+        "p95_step_ms": float(np.percentile(step_times_ms, 95)),
         "structures_per_second": structures / (sum(step_times_ms) / 1.0e3),
         "losses": losses,
         "batch_shapes": batch_shapes,
         "peak_memory_bytes": torch.cuda.max_memory_allocated(device),
         "is_compiled": None if facade is None else facade.is_compiled,
         "compilation_error": None if facade is None else facade.compilation_error,
+        "compile_wall_seconds": (
+            None if compiled_facade is None else compile_wall_seconds
+        ),
         "validation_batch_shape": validation_batch_shape,
         "dynamic_shape_signatures": dynamic_shape_signatures,
         "dynamo_counters_after_warmup": counters_after_warmup,

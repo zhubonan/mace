@@ -15,7 +15,7 @@ import math
 import types
 import warnings
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from e3nn import o3
@@ -23,6 +23,8 @@ from torch._decomp import core_aten_decompositions
 from torch.func import functional_call
 from torch.fx import GraphModule
 from torch.fx.experimental.proxy_tensor import make_fx
+
+from mace.tools.edge_derivative import trace_edge_derivative_outputs
 
 
 _SUPPORTED_OUTPUT_FLAGS = frozenset(("energy", "forces", "virials", "stress"))
@@ -572,12 +574,22 @@ def _lower_training_fx(
     model: torch.nn.Module,
     example_batch: Mapping[str, torch.Tensor],
     output_args: Mapping[str, bool],
+    derivative_mode: Literal["positions", "edges"] = "positions",
 ) -> GraphModule:
     flat_model, input_keys, parameter_names, buffer_names, inputs = _trace_inputs(
         model, example_batch, output_args
     )
     trace_inputs = tuple(inputs)
-    with _fx_duck_shape(False), _traceable_legacy_spherical_harmonics(model):
+    derivative_context = (
+        trace_edge_derivative_outputs()
+        if derivative_mode == "edges"
+        else contextlib.nullcontext()
+    )
+    with (
+        _fx_duck_shape(False),
+        _traceable_legacy_spherical_harmonics(model),
+        derivative_context,
+    ):
         fx_model = make_fx(
             flat_model,
             decomposition_table=mace_decomp_table(),
@@ -633,10 +645,21 @@ def make_training_fx(
     example_batch: Mapping[str, torch.Tensor],
     output_args: Mapping[str, bool],
     validation_batch: Mapping[str, torch.Tensor] | None = None,
+    derivative_mode: Literal["positions", "edges"] = "positions",
 ) -> GraphModule:
     """Lower MACE's internal conservative derivative to a functional FX graph."""
 
-    fx_model = _lower_training_fx(model, example_batch, output_args)
+    if derivative_mode not in {"positions", "edges"}:
+        raise ValueError(
+            "derivative_mode must be either 'positions' or 'edges', got "
+            f"{derivative_mode!r}"
+        )
+    fx_model = _lower_training_fx(
+        model,
+        example_batch,
+        output_args,
+        derivative_mode=derivative_mode,
+    )
     if validation_batch is None:
         return fx_model
 
@@ -648,7 +671,12 @@ def make_training_fx(
             f"graph-derived dimensions; both were {first_shape}"
         )
 
-    validation_fx = _lower_training_fx(model, validation_batch, output_args)
+    validation_fx = _lower_training_fx(
+        model,
+        validation_batch,
+        output_args,
+        derivative_mode=derivative_mode,
+    )
     if fx_model.code != validation_fx.code:
         difference = _first_code_difference(fx_model, validation_fx)
         raise RuntimeError(
@@ -679,10 +707,12 @@ class CompiledTrainingModel(torch.nn.Module):
         mode: str,
         dynamic: bool,
         validation_batch: Mapping[str, torch.Tensor] | None = None,
+        derivative_mode: Literal["positions", "edges"] = "positions",
     ) -> None:
         super().__init__()
         self.base_model = model
         self.output_args = dict(output_args)
+        self.derivative_mode = derivative_mode
         self.output_keys = _requested_output_keys(output_args)
         self.input_keys: tuple[str, ...] = ()
         self.parameter_names = tuple(name for name, _ in model.named_parameters())
@@ -691,6 +721,11 @@ class CompiledTrainingModel(torch.nn.Module):
         self._compiled_ref: tuple[Any | None] = (None,)
         self.compilation_error: str | None = None
 
+        if derivative_mode not in {"positions", "edges"}:
+            raise ValueError(
+                "derivative_mode must be either 'positions' or 'edges', got "
+                f"{derivative_mode!r}"
+            )
         unsupported = {
             key
             for key, requested in output_args.items()
@@ -713,6 +748,7 @@ class CompiledTrainingModel(torch.nn.Module):
                 example_batch,
                 output_args,
                 validation_batch=validation_batch,
+                derivative_mode=derivative_mode,
             )
             self.input_keys = fx_model.meta["mace_input_keys"]
             self.parameter_names = fx_model.meta["mace_parameter_names"]
@@ -857,6 +893,7 @@ def compile_training_model(
     mode: str = "default",
     dynamic: bool = True,
     validation_batch: Mapping[str, torch.Tensor] | None = None,
+    derivative_mode: Literal["positions", "edges"] = "positions",
 ) -> CompiledTrainingModel:
     """Create a compiler-friendly force/stress training facade for ``model``."""
 
@@ -867,6 +904,7 @@ def compile_training_model(
         mode=mode,
         dynamic=dynamic,
         validation_batch=validation_batch,
+        derivative_mode=derivative_mode,
     )
 
 

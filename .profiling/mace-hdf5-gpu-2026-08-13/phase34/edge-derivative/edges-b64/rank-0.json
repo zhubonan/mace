@@ -1,0 +1,412 @@
+{
+  "rank": 0,
+  "world_size": 1,
+  "mode": "compiled",
+  "derivative_mode": "edges",
+  "torch_version": "2.11.0+cu128",
+  "cuda_version": "12.8",
+  "device": "NVIDIA GeForce RTX 5090",
+  "dataset": "/mnt/hdd2/bonan/omat-training/full-omat24-native-hdf5-pilot-1000/archives/rattled-1000-subsampled/shards/omat-000000000-000001000.h5",
+  "model_preset": "production",
+  "production_ablation": "none",
+  "r_max": 6.0,
+  "parameter_count": 9063204,
+  "batch_size_per_rank": 64,
+  "num_workers": 4,
+  "warmup_steps": 8,
+  "timed_steps": 24,
+  "step_times_ms": [
+    23.915394966024905,
+    26.625205005984753,
+    28.227270988281816,
+    21.308685012627393,
+    21.157455979846418,
+    23.358592996373773,
+    20.995225000660866,
+    20.330499042756855,
+    19.730032014194876,
+    20.216952019836754,
+    21.08027000213042,
+    20.574890018906444,
+    21.463948010932654,
+    22.38103502895683,
+    20.068278012331575,
+    19.4147489964962,
+    22.637734015006572,
+    23.651326016988605,
+    28.277211997192353,
+    18.444092012941837,
+    19.420796015765518,
+    19.898750993888825,
+    20.58207301888615,
+    18.762569001410156
+  ],
+  "median_step_ms": 21.037747501395643,
+  "p95_step_ms": 27.986961090937253,
+  "structures_per_second": 2939.5833172509315,
+  "losses": [
+    124.37199401855469,
+    109.7473373413086,
+    188.1136016845703,
+    144.93899536132812,
+    116.88690948486328,
+    142.69468688964844,
+    131.52459716796875,
+    143.10325622558594,
+    121.79010009765625,
+    104.92449188232422,
+    153.7324981689453,
+    180.8085479736328,
+    159.9612274169922,
+    164.11520385742188,
+    153.66551208496094,
+    134.2272186279297,
+    111.47272491455078,
+    130.1183624267578,
+    144.06802368164062,
+    133.18650817871094,
+    125.02860260009766,
+    135.20419311523438,
+    136.67356872558594,
+    131.62501525878906
+  ],
+  "batch_shapes": [
+    {
+      "structures": 64,
+      "atoms": 794,
+      "edges": 26576
+    },
+    {
+      "structures": 64,
+      "atoms": 814,
+      "edges": 28150
+    },
+    {
+      "structures": 64,
+      "atoms": 830,
+      "edges": 29960
+    },
+    {
+      "structures": 64,
+      "atoms": 812,
+      "edges": 28968
+    },
+    {
+      "structures": 64,
+      "atoms": 799,
+      "edges": 30730
+    },
+    {
+      "structures": 64,
+      "atoms": 784,
+      "edges": 29910
+    },
+    {
+      "structures": 64,
+      "atoms": 782,
+      "edges": 27580
+    },
+    {
+      "structures": 64,
+      "atoms": 824,
+      "edges": 29416
+    },
+    {
+      "structures": 64,
+      "atoms": 824,
+      "edges": 28248
+    },
+    {
+      "structures": 64,
+      "atoms": 781,
+      "edges": 27198
+    },
+    {
+      "structures": 64,
+      "atoms": 840,
+      "edges": 30726
+    },
+    {
+      "structures": 64,
+      "atoms": 818,
+      "edges": 30990
+    },
+    {
+      "structures": 64,
+      "atoms": 818,
+      "edges": 30690
+    },
+    {
+      "structures": 64,
+      "atoms": 816,
+      "edges": 30124
+    },
+    {
+      "structures": 64,
+      "atoms": 824,
+      "edges": 30640
+    },
+    {
+      "structures": 64,
+      "atoms": 803,
+      "edges": 29290
+    },
+    {
+      "structures": 64,
+      "atoms": 806,
+      "edges": 27832
+    },
+    {
+      "structures": 64,
+      "atoms": 790,
+      "edges": 27666
+    },
+    {
+      "structures": 64,
+      "atoms": 808,
+      "edges": 30468
+    },
+    {
+      "structures": 64,
+      "atoms": 806,
+      "edges": 28934
+    },
+    {
+      "structures": 64,
+      "atoms": 786,
+      "edges": 26192
+    },
+    {
+      "structures": 64,
+      "atoms": 794,
+      "edges": 29382
+    },
+    {
+      "structures": 64,
+      "atoms": 792,
+      "edges": 29500
+    },
+    {
+      "structures": 64,
+      "atoms": 812,
+      "edges": 30416
+    }
+  ],
+  "peak_memory_bytes": 3375080448,
+  "is_compiled": true,
+  "compilation_error": null,
+  "compile_wall_seconds": 68.35068392695393,
+  "validation_batch_shape": {
+    "structures": 64,
+    "atoms": 810,
+    "edges": 27778
+  },
+  "dynamic_shape_signatures": [
+    [
+      64,
+      801,
+      28764
+    ],
+    [
+      64,
+      810,
+      27778
+    ]
+  ],
+  "dynamo_counters_after_warmup": {
+    "frames": {
+      "total": 1,
+      "ok": 1
+    },
+    "stats": {
+      "calls_captured": 2371,
+      "unique_graphs": 1
+    },
+    "inductor": {
+      "pattern_matcher_count": 1291,
+      "pattern_matcher_nodes": 1584,
+      "removed_pointless_view_pair": 2,
+      "fxgraph_cache_miss": 2,
+      "extern_calls": 316,
+      "async_compile_cache_miss": 452,
+      "async_compile_cache_hit": 226,
+      "triton_bundler_save_kernel": 3744,
+      "triton_bundler_save_static_autotuner": 2,
+      "benchmarking.InductorBenchmarker.benchmark": 418,
+      "benchmarking.InductorBenchmarker.benchmark_gpu": 418
+    },
+    "aot_autograd": {
+      "total": 1,
+      "autograd_cache_miss": 1,
+      "autograd_cache_saved": 1,
+      "ok": 1
+    },
+    "aten_mm_info": {
+      "aten.bmm_s9_1_3_3": 2,
+      "aten.bmm_(s72//3)_(s72//((s72//3)))_3_3": 1,
+      "aten.bmm_s85_1_3_3": 1,
+      "aten.mm_s9_1_89": 1,
+      "aten.mm_s9_128_89": 1,
+      "aten.mm_s9_128_128": 26,
+      "aten.mm_s85_64_10": 4,
+      "aten.mm_s85_64_64": 16,
+      "aten.mm_s85_512_64": 2,
+      "aten.mm_s85_1_10": 4,
+      "aten.mm_3*s9_128_128": 24,
+      "aten.mm_5*s9_128_128": 16,
+      "aten.mm_7*s9_128_128": 12,
+      "aten.mm_s9_128_11392": 4,
+      "aten.mm_128*s9_1_1": 8,
+      "aten.mm_128*s9_3_3": 4,
+      "aten.mm_s9_16384_89": 3,
+      "aten.bmm_s9_128_3_128": 4,
+      "aten.mm_128*s9_5_5": 4,
+      "aten.bmm_s9_128_5_128": 4,
+      "aten.mm_128*s9_7_7": 4,
+      "aten.bmm_s9_128_7_128": 4,
+      "aten.mm_11392_29_86": 1,
+      "aten.mm_s85_1280_64": 2,
+      "aten.mm_11392_13_28": 1,
+      "aten.mm_s9_1_128": 1,
+      "aten.mm_s9_16_128": 2,
+      "aten.mm_s9_1_16": 1,
+      "aten.mm_s9_16_1": 2,
+      "aten.mm_s9_128_16": 2,
+      "aten.mm_s9_128_1": 2,
+      "aten.mm_s85_10_1": 3,
+      "aten.mm_s85_64_1280": 2,
+      "aten.addmm_s85_10_64": 2,
+      "aten.mm_s9_11392_128": 4,
+      "aten.addmm_s85_10_1": 1,
+      "aten.mm_s85_64_512": 2,
+      "aten.mm_10_64_s85": 4,
+      "aten.mm_64_64_s85": 8,
+      "aten.mm_64_512_s85": 2,
+      "aten.mm_10_1_s85": 4,
+      "aten.mm_128_128_s9": 13,
+      "aten.mm_128_128_3*s9": 12,
+      "aten.mm_128_128_5*s9": 8,
+      "aten.mm_128_128_7*s9": 6,
+      "aten.mm_128_11392_s9": 2,
+      "aten.bmm_s9_128_128_3": 2,
+      "aten.bmm_s9_128_128_5": 2,
+      "aten.bmm_s9_128_128_7": 2,
+      "aten.mm_64_1280_s85": 2,
+      "aten.mm_1_128_s9": 1,
+      "aten.mm_16_128_s9": 1,
+      "aten.mm_1_16_s9": 1,
+      "aten.mm_16_1_s9": 1,
+      "aten.mm_128_16_s9": 1,
+      "aten.mm_128_1_s9": 1,
+      "aten.mm_11392_28_13": 1,
+      "aten.mm_s85_10_64": 2,
+      "aten.mm_11392_128_s9": 2,
+      "aten.mm_11392_86_29": 1,
+      "aten.mm_89_16384_s9": 3,
+      "aten.mm_89_128_s9": 1,
+      "aten.bmm_s85_3_3_1": 1,
+      "aten.bmm_(s72//3)_3_3_(s72//((s72//3)))": 1,
+      "aten.bmm_s9_3_3_1": 1
+    }
+  },
+  "dynamo_counters_final": {
+    "frames": {
+      "total": 1,
+      "ok": 1
+    },
+    "stats": {
+      "calls_captured": 2371,
+      "unique_graphs": 1
+    },
+    "inductor": {
+      "pattern_matcher_count": 1291,
+      "pattern_matcher_nodes": 1584,
+      "removed_pointless_view_pair": 2,
+      "fxgraph_cache_miss": 2,
+      "extern_calls": 316,
+      "async_compile_cache_miss": 452,
+      "async_compile_cache_hit": 226,
+      "triton_bundler_save_kernel": 3744,
+      "triton_bundler_save_static_autotuner": 2,
+      "benchmarking.InductorBenchmarker.benchmark": 418,
+      "benchmarking.InductorBenchmarker.benchmark_gpu": 418
+    },
+    "aot_autograd": {
+      "total": 1,
+      "autograd_cache_miss": 1,
+      "autograd_cache_saved": 1,
+      "ok": 1
+    },
+    "aten_mm_info": {
+      "aten.bmm_s9_1_3_3": 2,
+      "aten.bmm_(s72//3)_(s72//((s72//3)))_3_3": 1,
+      "aten.bmm_s85_1_3_3": 1,
+      "aten.mm_s9_1_89": 1,
+      "aten.mm_s9_128_89": 1,
+      "aten.mm_s9_128_128": 26,
+      "aten.mm_s85_64_10": 4,
+      "aten.mm_s85_64_64": 16,
+      "aten.mm_s85_512_64": 2,
+      "aten.mm_s85_1_10": 4,
+      "aten.mm_3*s9_128_128": 24,
+      "aten.mm_5*s9_128_128": 16,
+      "aten.mm_7*s9_128_128": 12,
+      "aten.mm_s9_128_11392": 4,
+      "aten.mm_128*s9_1_1": 8,
+      "aten.mm_128*s9_3_3": 4,
+      "aten.mm_s9_16384_89": 3,
+      "aten.bmm_s9_128_3_128": 4,
+      "aten.mm_128*s9_5_5": 4,
+      "aten.bmm_s9_128_5_128": 4,
+      "aten.mm_128*s9_7_7": 4,
+      "aten.bmm_s9_128_7_128": 4,
+      "aten.mm_11392_29_86": 1,
+      "aten.mm_s85_1280_64": 2,
+      "aten.mm_11392_13_28": 1,
+      "aten.mm_s9_1_128": 1,
+      "aten.mm_s9_16_128": 2,
+      "aten.mm_s9_1_16": 1,
+      "aten.mm_s9_16_1": 2,
+      "aten.mm_s9_128_16": 2,
+      "aten.mm_s9_128_1": 2,
+      "aten.mm_s85_10_1": 3,
+      "aten.mm_s85_64_1280": 2,
+      "aten.addmm_s85_10_64": 2,
+      "aten.mm_s9_11392_128": 4,
+      "aten.addmm_s85_10_1": 1,
+      "aten.mm_s85_64_512": 2,
+      "aten.mm_10_64_s85": 4,
+      "aten.mm_64_64_s85": 8,
+      "aten.mm_64_512_s85": 2,
+      "aten.mm_10_1_s85": 4,
+      "aten.mm_128_128_s9": 13,
+      "aten.mm_128_128_3*s9": 12,
+      "aten.mm_128_128_5*s9": 8,
+      "aten.mm_128_128_7*s9": 6,
+      "aten.mm_128_11392_s9": 2,
+      "aten.bmm_s9_128_128_3": 2,
+      "aten.bmm_s9_128_128_5": 2,
+      "aten.bmm_s9_128_128_7": 2,
+      "aten.mm_64_1280_s85": 2,
+      "aten.mm_1_128_s9": 1,
+      "aten.mm_16_128_s9": 1,
+      "aten.mm_1_16_s9": 1,
+      "aten.mm_16_1_s9": 1,
+      "aten.mm_128_16_s9": 1,
+      "aten.mm_128_1_s9": 1,
+      "aten.mm_11392_28_13": 1,
+      "aten.mm_s85_10_64": 2,
+      "aten.mm_11392_128_s9": 2,
+      "aten.mm_11392_86_29": 1,
+      "aten.mm_89_16384_s9": 3,
+      "aten.mm_89_128_s9": 1,
+      "aten.bmm_s85_3_3_1": 1,
+      "aten.bmm_(s72//3)_3_3_(s72//((s72//3)))": 1,
+      "aten.bmm_s9_3_3_1": 1
+    }
+  },
+  "parameter_checksum": "8dcd3bee4ce7e8214a5cef45ebe4e8195f123d5534ebc7298a5fcf01e6e65568",
+  "rank_checksums": [
+    "8dcd3bee4ce7e8214a5cef45ebe4e8195f123d5534ebc7298a5fcf01e6e65568"
+  ]
+}
