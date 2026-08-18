@@ -19,9 +19,9 @@ The new path is opt-in:
 ```
 
 Existing HDF5 and ASE-LMDB defaults are unchanged. Batches retain exactly
-`--batch_size` structures per rank. This report qualifies the full-corpus
-sampler invariants and the local CPU input path; GPU and compiled-DDP
-qualification remain separate Phase-44 gates.
+`--batch_size` structures per rank. The full-corpus sampler, local CPU/GPU
+input path, compiled DDP, checkpoint restart, and legacy single-model export
+are qualified below.
 
 ## Architecture
 
@@ -154,12 +154,95 @@ CPU matrix:
 Compact source artifacts are retained in this directory. Raw decoded rows,
 temporary memmaps, runtime environments, and bulky traces are not retained.
 
-## Recommendation and remaining gate
+## Local RTX 5090 compiled-training matrix
 
-Use `window_shards=8` for the next GPU qualification. The native reader and
-sampler meet the CPU correctness, coverage, locality, and bounded-resource
-requirements. Do not yet replace production HDF5 training solely from these
-CPU numbers: the required next result is a matched RTX 5090 full
-energy/force/stress comparison of HDF5/random, native/random, and
-native/balanced at 8 and 16 workers, followed by strict two-rank and four-rank
-compiled-DDP checkpoint/model-format gates.
+The final local matrix used source `c7b34672efbb36594556aac5981f6facb4ab0d40`,
+PyTorch 2.11.0+cu128, e3nn 0.4.4, IEEE FP32 (both CUDA matmul and cuDNN TF32
+disabled), one RTX 5090, batch 128, four warmups, and 256 timed full
+energy/force/stress optimizer steps. It ran three order-balanced repetitions
+at 8 and 16 workers. The HDF5 and native-random cases used the same 1,000
+official rows and passed exact batch-shape and first-loss parity.
+
+| Input/sampling | Workers | Median structures/s | Active SM | Active power | Power limit |
+|---|---:|---:|---:|---:|---:|
+| HDF5/random | 8 | 3,613 | 44.9% | 239 W | 41.5% |
+| Native/random | 8 | 5,198 | 68.1% | 366 W | 63.7% |
+| Native/balanced | 8 | 5,265 | 68.9% | 312 W | 54.2% |
+| HDF5/random | 16 | 4,026 | 52.4% | 332 W | 57.7% |
+| Native/random | 16 | 5,512 | 64.2% | 353 W | 61.3% |
+| Native/balanced | 16 | 5,669 | 59.2% | 309 W | 53.7% |
+
+Native/random improves median end-to-end throughput by 43.9% at 8 workers
+and 36.9% at 16 workers over matched HDF5. Atom-balanced sampling is 1.3%
+and 2.9% faster than native/random, so it passes the predefined gate of no
+more than a 2% regression. Every run retained one stable Dynamo graph with no
+post-warmup counter growth or fallback.
+
+The power result must be interpreted with SM activity: low board power in the
+HDF5 case accompanies only 44.9-52.4% active SM and lower throughput. Native
+input removes much of that starvation. Balanced input can finish faster with
+lower sampled board power because this pilot has constant 12-atom structures
+and its ordering changes the instantaneous edge workload; power draw alone is
+not an occupancy metric.
+
+Compact summary:
+
+```text
+.profiling/mace-hdf5-gpu-2026-08-13/phase44/gpu-matrix-summary.json
+```
+
+The raw matrix is intentionally untracked because it contains 18 rank JSONs,
+logs, and telemetry streams.
+
+## Strict compiled-DDP and model compatibility gates
+
+An exact source bundle was deployed read-only under
+`/scratch/bonan/train-downsample-qualifications/c7b3467`. The retained
+benchmark SHA256 is
+`f8d3185ff280d1a5cda0f741305f025beba3fb6b805e4b71bccda054d7c1a4c9`,
+and the copied official shard retained SHA256
+`55436e16c28427a8f95f05afb924225ae52e5fc5acd96d62fa2dd7bec6a5ade6`.
+
+| Job | GPUs | Global batch | Median period | Structures/s | Result |
+|---:|---|---:|---:|---:|---|
+| 543439 | 2x RTX A5000 | 256 | 70.91 ms | 3,606 | Passed |
+| 543446 | 4x RTX A5000 | 512 | 93.44 ms | 5,463 | Passed |
+
+Both ran 256 timed steps/rank with eight workers/rank. All ranks stayed
+compiled with one stable graph, finite matching losses, and identical
+within-run parameter checksums. The four-rank run reached 75.2% mean active
+SM and 161.8 W mean active power per sampled GPU. These jobs establish DDP
+correctness and 1.52x throughput scaling from two to four identical A5000s;
+they are not RTX 5090 throughput estimates.
+
+The preferred four-rank RTX 5090 request (job 543440) could not start because
+only one of eight GPUs on the selected node was free. Slurm estimated a start
+on 2026-08-20, so the never-started job was cancelled rather than leaving an
+unattended allocation. Local single-5090 performance is covered by the matrix
+above; a four-5090 scaling number remains optional rather than a correctness
+blocker.
+
+The production CLI was then exercised through two-rank compiled DDP with the
+native balanced loader. Job 543445 loaded the retained epoch-0 checkpoint,
+logged `Compiled training DDP active`, completed epoch 1, and exported one
+CPU `ScaleShiftMACE` `.model`. In an e3nn 0.4.4 runtime:
+
+- the checkpoint and model state had no `module.` or `base_model.` prefixes;
+- the output remained a single `.model` file owned by the ordinary e3nn model;
+- CPU inference produced finite energy, forces, virials, and stress.
+
+Remote evidence is under:
+
+```text
+/scratch/bonan/train-downsample-qualifications/c7b3467/outputs
+/scratch/bonan/train-downsample-qualifications/c7b3467/save-reload-r2
+```
+
+## Recommendation
+
+Use the opt-in native direct reader with `window_shards=8` for OMat24 training.
+It retains the unchanged official files and fixed structures/rank semantics,
+passes matched input and compiled-DDP correctness, increases local end-to-end
+throughput, and preserves checkpoint restart plus the legacy e3nn 0.4.4
+single-file model contract. Keep HDF5 and generic ASE-LMDB as the defaults
+until this path has accumulated production-scale operational experience.

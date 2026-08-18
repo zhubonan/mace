@@ -1,0 +1,45 @@
+{
+  "acceptance": {
+    "balanced_within_two_percent": true,
+    "compiled_without_fallback": true,
+    "exact_hdf5_native_input_parity": true,
+    "stable_dynamo_graph": true
+  },
+  "adapter_sha256": "3bd770aa9c4c4d9d1cea0b6c5d3219d4aae9db0bee21685168728245918365f9",
+  "benchmark_sha256": "f8d3185ff280d1a5cda0f741305f025beba3fb6b805e4b71bccda054d7c1a4c9",
+  "batch_size_per_rank": 128,
+  "matmul_precision": "highest",
+  "medians": {
+    "hdf5_random_w16": 4026.2988655798385,
+    "hdf5_random_w8": 3612.872529261352,
+    "native_balanced_w16": 5669.233402773482,
+    "native_balanced_w8": 5264.768498258019,
+    "native_random_w16": 5511.529437946663,
+    "native_random_w8": 5197.9918176611345
+  },
+  "repetitions": 3,
+  "runs": 18,
+  "source_revision": "c7b34672efbb36594556aac5981f6facb4ab0d40",
+  "telemetry_medians": {
+    "hdf5_random_w16_active_power_mean_limit_fraction": 0.5767391304347826,
+    "hdf5_random_w16_active_power_mean_w": 331.625,
+    "hdf5_random_w16_active_sm_mean_percent": 52.44444444444444,
+    "hdf5_random_w8_active_power_mean_limit_fraction": 0.4152173913043478,
+    "hdf5_random_w8_active_power_mean_w": 238.75,
+    "hdf5_random_w8_active_sm_mean_percent": 44.92857142857143,
+    "native_balanced_w16_active_power_mean_limit_fraction": 0.5370048309178744,
+    "native_balanced_w16_active_power_mean_w": 308.77777777777777,
+    "native_balanced_w16_active_sm_mean_percent": 59.22222222222222,
+    "native_balanced_w8_active_power_mean_limit_fraction": 0.5418357487922705,
+    "native_balanced_w8_active_power_mean_w": 311.55555555555554,
+    "native_balanced_w8_active_sm_mean_percent": 68.88888888888889,
+    "native_random_w16_active_power_mean_limit_fraction": 0.6130434782608696,
+    "native_random_w16_active_power_mean_w": 352.5,
+    "native_random_w16_active_sm_mean_percent": 64.25,
+    "native_random_w8_active_power_mean_limit_fraction": 0.6372670807453417,
+    "native_random_w8_active_power_mean_w": 366.42857142857144,
+    "native_random_w8_active_sm_mean_percent": 68.14285714285714
+  },
+  "timed_steps": 256,
+  "warmup_steps": 4
+}
