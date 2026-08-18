@@ -1,8 +1,8 @@
 import json
 import multiprocessing
 import pickle
-from pathlib import Path
 import zlib
+from pathlib import Path
 
 import lmdb
 import numpy as np
@@ -300,13 +300,26 @@ def test_metadata_requires_natoms(tmp_path):
     ],
 )
 def test_load_natoms_validates_shape_and_values(tmp_path, values, match):
-    write_metadata_shard(
-        tmp_path / "family", "0", [4, 8], metadata_values=values
-    )
+    write_metadata_shard(tmp_path / "family", "0", [4, 8], metadata_values=values)
     index = build_omat_shard_index(tmp_path)
 
     with pytest.raises(ValueError, match=match):
         index.load_natoms(0)
+
+
+def test_load_natoms_normalizes_empty_float_metadata(tmp_path):
+    write_metadata_shard(
+        tmp_path / "family",
+        "0",
+        [],
+        metadata_values=np.asarray([], dtype=np.float64),
+    )
+    index = build_omat_shard_index(tmp_path)
+
+    natoms = index.load_natoms(0)
+
+    assert natoms.dtype == np.int64
+    assert natoms.shape == (0,)
 
 
 def test_direct_dataset_decodes_configuration_and_builds_graph(tmp_path):
@@ -387,9 +400,7 @@ def test_direct_dataset_applies_official_weights_head_and_transform(tmp_path):
         "config_stress_weight": 4.0,
         "config_type": "rattled",
     }
-    write_official_shard(
-        tmp_path / "family", "0", rows=1, key_values=weights
-    )
+    write_official_shard(tmp_path / "family", "0", rows=1, key_values=weights)
     dataset = make_dataset(tmp_path, transform=mark_transformed)
 
     configuration = dataset.read_configuration(0)
@@ -421,9 +432,7 @@ def test_decode_omat_row_requires_active_efs_fields(missing):
 
 
 def test_direct_dataset_reports_missing_numeric_row_with_context(tmp_path):
-    write_official_shard(
-        tmp_path / "family", "7", rows=1, metadata_rows=2
-    )
+    write_official_shard(tmp_path / "family", "7", rows=1, metadata_rows=2)
     dataset = make_dataset(tmp_path)
 
     with pytest.raises(KeyError, match=r"family.*db_7.*local row 1.*key 2"):
@@ -432,9 +441,7 @@ def test_direct_dataset_reports_missing_numeric_row_with_context(tmp_path):
 
 
 def test_direct_dataset_wraps_decode_failure_with_row_context(tmp_path):
-    write_official_shard(
-        tmp_path / "family", "7", rows=1, missing="forces"
-    )
+    write_official_shard(tmp_path / "family", "7", rows=1, missing="forces")
     dataset = make_dataset(tmp_path)
 
     with pytest.raises(

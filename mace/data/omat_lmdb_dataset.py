@@ -19,7 +19,6 @@ from torch.utils.data import Dataset
 from mace.data.atomic_data import AtomicData
 from mace.data.utils import Configuration
 
-
 OMAT_MANIFEST_NAME = "omat24-manifest.json"
 OMAT_MANIFEST_FORMAT = "mace-omat-aselmdb-manifest-v1"
 
@@ -65,21 +64,22 @@ class OMatShardIndex:
             if "natoms" not in metadata:
                 raise ValueError(f"Missing natoms in {shard.metadata_path}")
             raw_natoms = metadata["natoms"]
-            if not np.issubdtype(raw_natoms.dtype, np.integer):
-                raise ValueError(
-                    "natoms metadata must have integer dtype: "
-                    f"{shard.metadata_path}"
-                )
-            natoms = np.asarray(raw_natoms, dtype=np.int64)
-        if natoms.ndim != 1:
+        if raw_natoms.ndim != 1:
             raise ValueError(
                 f"natoms metadata must be one-dimensional: {shard.metadata_path}"
             )
-        if len(natoms) != shard.length:
+        if len(raw_natoms) != shard.length:
             raise ValueError(
-                f"natoms length {len(natoms)} does not match shard length "
+                f"natoms length {len(raw_natoms)} does not match shard length "
                 f"{shard.length}: {shard.metadata_path}"
             )
+        if not len(raw_natoms):
+            return np.empty(0, dtype=np.int64)
+        if not np.issubdtype(raw_natoms.dtype, np.integer):
+            raise ValueError(
+                "natoms metadata must have integer dtype: " f"{shard.metadata_path}"
+            )
+        natoms = np.asarray(raw_natoms, dtype=np.int64)
         if np.any(natoms < 1):
             raise ValueError(
                 f"natoms metadata must be strictly positive: {shard.metadata_path}"
@@ -204,13 +204,9 @@ def _build_from_manifest(root: Path, manifest: Path) -> OMatShardIndex:
         if metadata_value is None:
             metadata_path = None
             if rows:
-                raise ValueError(
-                    f"Missing metadata for non-empty shard {shard_path}"
-                )
+                raise ValueError(f"Missing metadata for non-empty shard {shard_path}")
         elif isinstance(metadata_value, str):
-            metadata_path = _safe_manifest_path(
-                root, metadata_value, field="metadata"
-            )
+            metadata_path = _safe_manifest_path(root, metadata_value, field="metadata")
             if not metadata_path.is_file():
                 raise FileNotFoundError(metadata_path)
         else:
@@ -350,9 +346,7 @@ def write_omat_manifest(
     manifest = root_path / OMAT_MANIFEST_NAME
     temporary = manifest.with_name(f".{manifest.name}.{os.getpid()}.tmp")
     try:
-        temporary.write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-        )
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         temporary.replace(manifest)
     finally:
         if temporary.exists():

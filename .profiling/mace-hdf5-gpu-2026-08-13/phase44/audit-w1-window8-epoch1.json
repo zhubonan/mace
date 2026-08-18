@@ -1,0 +1,27 @@
+{
+  "balanced_p95_rank_imbalance": 0.0,
+  "batch_size": 128,
+  "checksum": "72d0bd5079fa1e12159210ecbc701b338b5bb946bd82cf3d16387e0c86e8c8f8",
+  "coverage_bitset_bytes": 12603074,
+  "dataset_id": "OMat24",
+  "disjoint_rank_samples": true,
+  "dropped": 9,
+  "duplicates": 0,
+  "epoch": 1,
+  "imbalance_comparison_steps": 8192,
+  "largest_window_rows": 285282,
+  "natoms_memmap_bytes": 806596680,
+  "peak_rss_kib": 1595224,
+  "peak_window_rows": 285372,
+  "peak_window_shards": 8,
+  "random_p95_rank_imbalance": 0.0,
+  "rank_steps": [
+    787692
+  ],
+  "rows": 100824585,
+  "seed": 123,
+  "shards": 5300,
+  "used": 100824576,
+  "window_shards": 8,
+  "world_size": 1
+}
