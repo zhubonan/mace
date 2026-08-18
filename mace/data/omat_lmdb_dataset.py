@@ -5,12 +5,19 @@ from __future__ import annotations
 import bisect
 import json
 import os
+import zlib
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 import lmdb
 import numpy as np
+import orjson
+from torch.utils.data import Dataset
+
+from mace.data.atomic_data import AtomicData
+from mace.data.utils import Configuration
 
 
 OMAT_MANIFEST_NAME = "omat24-manifest.json"
@@ -57,7 +64,13 @@ class OMatShardIndex:
         with np.load(shard.metadata_path, allow_pickle=False) as metadata:
             if "natoms" not in metadata:
                 raise ValueError(f"Missing natoms in {shard.metadata_path}")
-            natoms = np.asarray(metadata["natoms"], dtype=np.int64)
+            raw_natoms = metadata["natoms"]
+            if not np.issubdtype(raw_natoms.dtype, np.integer):
+                raise ValueError(
+                    "natoms metadata must have integer dtype: "
+                    f"{shard.metadata_path}"
+                )
+            natoms = np.asarray(raw_natoms, dtype=np.int64)
         if natoms.ndim != 1:
             raise ValueError(
                 f"natoms metadata must be one-dimensional: {shard.metadata_path}"
@@ -345,3 +358,154 @@ def write_omat_manifest(
         if temporary.exists():
             temporary.unlink()
     return manifest
+
+
+def decode_omat_row(value: bytes, *, head: str = "Default") -> Configuration:
+    """Decode one official OMat ASE-LMDB row without constructing ASE objects."""
+
+    row = orjson.loads(zlib.decompress(value))
+    required = ("numbers", "positions", "cell", "pbc", "energy", "forces", "stress")
+    missing = [field for field in required if field not in row]
+    if missing:
+        raise KeyError(f"Official OMat row is missing required E/F/S fields: {missing}")
+    key_values = row.get("key_value_pairs", {})
+    return Configuration(
+        atomic_numbers=np.asarray(row["numbers"], dtype=np.int64),
+        positions=np.asarray(row["positions"]),
+        cell=np.asarray(row["cell"]),
+        pbc=tuple(bool(value) for value in row["pbc"]),
+        properties={
+            "energy": row["energy"],
+            "forces": np.asarray(row["forces"]),
+            "stress": np.asarray(row["stress"]),
+        },
+        property_weights={
+            "energy": float(key_values.get("config_energy_weight", 1.0)),
+            "forces": float(key_values.get("config_forces_weight", 1.0)),
+            "stress": float(key_values.get("config_stress_weight", 1.0)),
+        },
+        weight=float(key_values.get("config_weight", 1.0)),
+        config_type=str(key_values.get("config_type", "Default")),
+        head=head,
+    )
+
+
+class OMatLMDBDataset(Dataset):
+    """Read official OMat shards lazily with process-local LMDB handles."""
+
+    def __init__(
+        self,
+        roots,
+        r_max,
+        z_table,
+        heads=None,
+        head: str = "Default",
+        max_open_shards: int = 8,
+        manifest=None,
+        transform=None,
+    ) -> None:
+        if max_open_shards < 1:
+            raise ValueError("max_open_shards must be positive")
+        self.shard_index = build_omat_shard_index(roots, manifest=manifest)
+        self.r_max = float(r_max)
+        self.z_table = z_table
+        self.heads = tuple(heads or ["Default"])
+        self.head = str(head)
+        self.max_open_shards = int(max_open_shards)
+        self.transform = transform
+        self._owner_pid = os.getpid()
+        self._handles = OrderedDict()
+        self._open_environment_count = 0
+
+    def __len__(self) -> int:
+        return len(self.shard_index)
+
+    @property
+    def open_environment_count(self) -> int:
+        self._ensure_process_owner()
+        return self._open_environment_count
+
+    @property
+    def active_environment_count(self) -> int:
+        self._ensure_process_owner()
+        return len(self._handles)
+
+    def _close_handles(self) -> None:
+        while self._handles:
+            _, (transaction, environment) = self._handles.popitem(last=False)
+            transaction.abort()
+            environment.close()
+
+    def _ensure_process_owner(self) -> None:
+        pid = os.getpid()
+        if self._owner_pid != pid:
+            self._close_handles()
+            self._owner_pid = pid
+            self._open_environment_count = 0
+
+    def _transaction(self, shard_index: int):
+        self._ensure_process_owner()
+        handle = self._handles.pop(shard_index, None)
+        if handle is None:
+            shard = self.shard_index.shards[shard_index]
+            environment = lmdb.open(
+                str(shard.path),
+                subdir=False,
+                readonly=True,
+                lock=False,
+                readahead=True,
+                meminit=False,
+                max_readers=1024,
+            )
+            transaction = environment.begin(write=False)
+            handle = (transaction, environment)
+            self._open_environment_count += 1
+        self._handles[shard_index] = handle
+        while len(self._handles) > self.max_open_shards:
+            _, (transaction, environment) = self._handles.popitem(last=False)
+            transaction.abort()
+            environment.close()
+        return handle[0]
+
+    def read_configuration(self, index: int) -> Configuration:
+        shard_index, local_index = self.shard_index.locate(index)
+        shard = self.shard_index.shards[shard_index]
+        key = str(local_index + 1).encode("ascii")
+        value = self._transaction(shard_index).get(key)
+        if value is None:
+            raise KeyError(
+                f"Missing OMat row in family {shard.family}, shard "
+                f"{shard.path.name}, local row {local_index}, key {key.decode('ascii')}"
+            )
+        try:
+            return decode_omat_row(value, head=self.head)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to decode OMat row in family {shard.family}, "
+                f"shard {shard.path.name}, local row {local_index}, "
+                f"key {key.decode('ascii')}: {exc}"
+            ) from exc
+
+    def __getitem__(self, index: int) -> AtomicData:
+        item = AtomicData.from_config(
+            self.read_configuration(index),
+            z_table=self.z_table,
+            cutoff=self.r_max,
+            heads=list(self.heads),
+        )
+        return self.transform(item) if self.transform is not None else item
+
+    def close(self) -> None:
+        self._close_handles()
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state["_owner_pid"] = None
+        state["_handles"] = OrderedDict()
+        state["_open_environment_count"] = 0
+        return state
+
+    def __del__(self):
+        handles = getattr(self, "_handles", None)
+        if handles is not None:
+            self.close()

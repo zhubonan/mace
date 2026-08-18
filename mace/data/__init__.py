@@ -4,9 +4,11 @@ from .lmdb_dataset import LMDBDataset
 from .neighborhood import get_neighborhood
 from .omat_lmdb_dataset import (
     OMAT_MANIFEST_NAME,
+    OMatLMDBDataset,
     OMatShard,
     OMatShardIndex,
     build_omat_shard_index,
+    decode_omat_row,
     write_omat_manifest,
 )
 from .padding_tools import build_fake_padding_graph
@@ -48,9 +50,11 @@ __all__ = [
     "update_keyspec_from_kwargs",
     "LMDBDataset",
     "OMAT_MANIFEST_NAME",
+    "OMatLMDBDataset",
     "OMatShard",
     "OMatShardIndex",
     "build_omat_shard_index",
+    "decode_omat_row",
     "write_omat_manifest",
     "build_fake_padding_graph",
 ]
