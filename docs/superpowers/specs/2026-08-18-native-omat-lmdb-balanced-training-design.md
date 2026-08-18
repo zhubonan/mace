@@ -159,10 +159,13 @@ Likewise, complete batches that do not fill a `world_size` DDP pack are
 carried into the next window. They are not dropped at every window boundary.
 
 All batches derived from one window are emitted as one bounded scheduling
-region. A batch can reference multiple shards in that window, but never a
-shard outside it. This limits per-worker active storage to the same shard set
-that fits the reader's handle cache and avoids uniformly random access across
-5,300 files.
+region. Ordinary batches reference only shards in that window. The single
+row-tail batch formed at a window boundary may also reference the preceding
+window's bounded carry; likewise, up to `world_size - 1` complete batches may
+remain as the next window's DDP-pack carry. These explicit boundary cases may
+cause a small number of extra environment opens, but the reader's LRU remains
+a hard bound on active handles. They do not permit uniform record-level
+access across 5,300 files.
 
 ### DDP step balancing
 
