@@ -63,6 +63,8 @@ run_case() {
         return 0
     fi
     mkdir -p "$output_dir"
+    nvidia-smi -i "$physical_gpu" --query-gpu=power.limit \
+        --format=csv,noheader,nounits > "$output_dir/gpu-info.csv"
     nvidia-smi dmon -i "$physical_gpu" -s pucvmet -d 1 -o DT \
         > "$output_dir/dmon.csv" 2> "$output_dir/dmon.err" &
     local telemetry_pid=$!

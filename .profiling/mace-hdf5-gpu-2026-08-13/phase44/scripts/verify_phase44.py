@@ -16,6 +16,63 @@ POLICIES = {
 }
 
 
+def parse_gpu_telemetry(path: Path) -> dict:
+    """Summarize dmon samples where the GPU reports active SM work."""
+    path = Path(path)
+    dmon_path = path / "dmon.csv"
+    power_limit_path = path / "gpu-info.csv"
+    _require(dmon_path.is_file(), f"missing GPU telemetry: {dmon_path}")
+    _require(power_limit_path.is_file(), f"missing GPU telemetry: {power_limit_path}")
+    try:
+        power_limit_w = float(power_limit_path.read_text(encoding="utf-8").strip())
+    except ValueError as error:
+        raise ValueError(
+            f"invalid GPU power limit telemetry: {power_limit_path}"
+        ) from error
+    _require(
+        math.isfinite(power_limit_w) and power_limit_w > 0,
+        "invalid GPU power limit telemetry",
+    )
+
+    samples = []
+    for line in dmon_path.read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        _require(len(fields) >= 8, f"malformed GPU telemetry row: {line}")
+        try:
+            power_w = float(fields[3])
+            sm_percent = float(fields[6])
+            memory_percent = float(fields[7])
+        except ValueError as error:
+            raise ValueError(f"non-numeric GPU telemetry row: {line}") from error
+        _require(
+            all(
+                math.isfinite(value) for value in (power_w, sm_percent, memory_percent)
+            ),
+            "non-finite GPU telemetry",
+        )
+        samples.append((power_w, sm_percent, memory_percent))
+    _require(samples, "GPU telemetry contains no samples")
+    active = [sample for sample in samples if sample[1] > 0]
+    _require(active, "GPU telemetry contains no active SM samples")
+    active_power = [sample[0] for sample in active]
+    active_sm = [sample[1] for sample in active]
+    active_memory = [sample[2] for sample in active]
+    mean_power = statistics.fmean(active_power)
+    return {
+        "samples": len(samples),
+        "active_samples": len(active),
+        "power_limit_w": power_limit_w,
+        "active_power_mean_w": mean_power,
+        "active_power_peak_w": max(active_power),
+        "active_power_mean_limit_fraction": mean_power / power_limit_w,
+        "active_sm_mean_percent": statistics.fmean(active_sm),
+        "active_sm_peak_percent": max(active_sm),
+        "active_memory_mean_percent": statistics.fmean(active_memory),
+    }
+
+
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
@@ -121,6 +178,7 @@ def verify_training_run(
     _require(len(adapter_hashes) == 1, "rank adapter hashes disagree")
     rates = [float(record["end_to_end_structures_per_second"]) for record in records]
     _require(all(math.isfinite(rate) and rate > 0 for rate in rates), "invalid rate")
+    telemetry = parse_gpu_telemetry(path)
     return {
         "path": str(path.resolve()),
         "policy": policy,
@@ -133,6 +191,7 @@ def verify_training_run(
         "parameter_checksum": first["parameter_checksum"],
         "benchmark_sha256": first["benchmark_sha256"],
         "adapter_sha256": first["adapter_sha256"],
+        "gpu_telemetry": telemetry,
     }
 
 
@@ -162,6 +221,7 @@ def verify_gpu_matrix(
     _require(len(benchmark_hashes) == 1, "matrix benchmark hashes disagree")
     _require(len(adapter_hashes) == 1, "matrix adapter hashes disagree")
     medians = {}
+    telemetry_medians = {}
     balanced_ok = True
     for workers in (8, 16):
         for policy in POLICIES:
@@ -172,6 +232,19 @@ def verify_gpu_matrix(
             ]
             _require(len(rates) == expected_repetitions, "matrix repetition mismatch")
             medians[f"{policy}_w{workers}"] = statistics.median(rates)
+            selected_runs = [
+                run
+                for run in runs
+                if run["workers"] == workers and run["policy"] == policy
+            ]
+            for field in (
+                "active_sm_mean_percent",
+                "active_power_mean_w",
+                "active_power_mean_limit_fraction",
+            ):
+                telemetry_medians[f"{policy}_w{workers}_{field}"] = statistics.median(
+                    run["gpu_telemetry"][field] for run in selected_runs
+                )
 
         random_rate = medians[f"native_random_w{workers}"]
         balanced_rate = medians[f"native_balanced_w{workers}"]
@@ -204,6 +277,7 @@ def verify_gpu_matrix(
         "root": str(root.resolve()),
         "runs": len(runs),
         "medians": medians,
+        "telemetry_medians": telemetry_medians,
         "benchmark_sha256": next(iter(benchmark_hashes)),
         "adapter_sha256": next(iter(adapter_hashes)),
         "acceptance": {"balanced_within_two_percent": balanced_ok},

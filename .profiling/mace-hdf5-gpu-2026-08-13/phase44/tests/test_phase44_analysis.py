@@ -22,7 +22,11 @@ from run_training_input_backend import (  # noqa: E402
     PrefixShardIndex,
     RepeatedBalancedDistributedSampler,
 )
-from verify_phase44 import verify_gpu_matrix, verify_training_run  # noqa: E402
+from verify_phase44 import (  # noqa: E402
+    parse_gpu_telemetry,
+    verify_gpu_matrix,
+    verify_training_run,
+)
 
 from mace.data import OMatShard, OMatShardIndex  # noqa: E402
 
@@ -281,7 +285,40 @@ def write_training_run(root, policy, workers, repetition, *, rate=1000.0):
         ),
         encoding="utf-8",
     )
+    (path / "gpu-info.csv").write_text("575.00\n", encoding="utf-8")
+    (path / "dmon.csv").write_text(
+        "#Date Time gpu pwr gtemp mtemp sm mem enc dec jpg ofa mclk pclk\n"
+        "#YYYYMMDD HH:MM:SS Idx W C C % % % % % % MHz MHz\n"
+        "20260818 10:00:00 0 8 40 - 0 0 0 0 0 0 405 180\n"
+        "20260818 10:00:01 0 300 50 - 60 20 0 0 0 0 14001 2500\n"
+        "20260818 10:00:02 0 400 55 - 80 30 0 0 0 0 14001 2500\n",
+        encoding="utf-8",
+    )
     return path
+
+
+def test_gpu_telemetry_reports_active_sm_and_power_fraction(tmp_path):
+    path = write_training_run(tmp_path, "native_random", 8, 0)
+
+    telemetry = parse_gpu_telemetry(path)
+
+    assert telemetry["samples"] == 3
+    assert telemetry["active_samples"] == 2
+    assert telemetry["active_sm_mean_percent"] == 70.0
+    assert telemetry["active_power_mean_w"] == 350.0
+    assert telemetry["active_power_mean_limit_fraction"] == pytest.approx(350 / 575)
+
+
+def test_training_run_verifier_rejects_missing_gpu_telemetry(tmp_path):
+    path = write_training_run(tmp_path, "native_random", 8, 0)
+    (path / "dmon.csv").unlink()
+
+    with pytest.raises(ValueError, match="telemetry"):
+        verify_training_run(
+            path,
+            expected_world_size=1,
+            expected_source_revision="abc123",
+        )
 
 
 def test_training_run_verifier_fails_on_graph_growth(tmp_path):
