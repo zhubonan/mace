@@ -36,6 +36,8 @@ def load_dataset_for_path(
     heads: List[str],
     head_config: Any,
     collection: Optional[Any] = None,
+    lmdb_backend: str = "ase",
+    lmdb_max_open_shards: int = 8,
 ) -> Union[Dataset, List]:
     """
     Load a dataset from a file path based on its format.
@@ -60,8 +62,8 @@ def load_dataset_for_path(
             raise ValueError(
                 "Not all paths in the list are ASE readable, not supported"
             )
-    if isinstance(file_path, str):
-        is_ase_readable = check_path_ase_read(file_path)
+    if isinstance(file_path, (str, Path)):
+        is_ase_readable = check_path_ase_read(str(file_path))
 
     if is_ase_readable:
         assert (
@@ -75,12 +77,23 @@ def load_dataset_for_path(
         ]
 
     filepath = Path(file_path)
+    if lmdb_backend not in ("ase", "omat_direct"):
+        raise ValueError(f"Unsupported LMDB backend: {lmdb_backend}")
     if filepath.is_dir():
 
         if filepath.name.endswith("_lmdb") or any(
             f.endswith(".lmdb") or f.endswith(".aselmdb") for f in os.listdir(filepath)
         ):
             logging.info(f"Loading LMDB dataset from {file_path}")
+            if lmdb_backend == "omat_direct":
+                return data.OMatLMDBDataset(
+                    file_path,
+                    r_max=r_max,
+                    z_table=z_table,
+                    heads=heads,
+                    head=head_config.head_name,
+                    max_open_shards=lmdb_max_open_shards,
+                )
             return data.LMDBDataset(
                 file_path,
                 r_max=r_max,
@@ -107,6 +120,15 @@ def load_dataset_for_path(
 
         if "lmdb" in str(filepath).lower() or "aselmdb" in str(filepath).lower():
             logging.info(f"Loading LMDB dataset based on path name: {file_path}")
+            if lmdb_backend == "omat_direct":
+                return data.OMatLMDBDataset(
+                    file_path,
+                    r_max=r_max,
+                    z_table=z_table,
+                    heads=heads,
+                    head=head_config.head_name,
+                    max_open_shards=lmdb_max_open_shards,
+                )
             return data.LMDBDataset(
                 file_path,
                 r_max=r_max,
@@ -141,6 +163,10 @@ def load_dataset_for_path(
         )
 
     if suffix in (".lmdb", ".aselmdb", ".db"):
+        if lmdb_backend == "omat_direct":
+            raise ValueError(
+                "The omat_direct LMDB backend requires a dataset root directory"
+            )
         logging.info(f"Loading single LMDB file: {file_path}")
         return data.LMDBDataset(
             file_path,

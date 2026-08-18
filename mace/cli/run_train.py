@@ -133,6 +133,74 @@ def _build_eager_distributed_model(
     return DDP(model, device_ids=device_ids)
 
 
+def _build_train_loader_and_sampler(
+    train_sets,
+    heads,
+    args,
+    *,
+    world_size: int,
+    rank: int,
+):
+    batch_sampling = getattr(args, "batch_sampling", "random")
+    if batch_sampling == "shard_window_atom_balanced":
+        if len(heads) != 1:
+            raise ValueError(
+                "Atom-balanced OMat sampling requires exactly one training head"
+            )
+        if args.lbfgs:
+            raise ValueError("Atom-balanced OMat sampling does not support LBFGS")
+        if args.data_aug_magmom:
+            raise ValueError(
+                "Atom-balanced OMat sampling does not support magnetic augmentation"
+            )
+        native_dataset = train_sets[heads[0]]
+        if isinstance(native_dataset, ConcatDataset):
+            raise ValueError(
+                "Atom-balanced OMat sampling requires one native OMat dataset"
+            )
+        if not isinstance(native_dataset, data.OMatLMDBDataset):
+            raise ValueError("Atom-balanced OMat sampling requires an OMatLMDBDataset")
+        train_sampler = data.ShardWindowAtomBalancedBatchSampler(
+            native_dataset.shard_index,
+            batch_size=args.batch_size,
+            seed=args.seed,
+            num_replicas=world_size,
+            rank=rank,
+            window_shards=args.lmdb_shard_window,
+        )
+        train_loader = torch_geometric.dataloader.DataLoader(
+            dataset=native_dataset,
+            batch_sampler=train_sampler,
+            pin_memory=args.pin_memory,
+            num_workers=args.num_workers,
+            generator=torch.Generator().manual_seed(args.seed),
+        )
+        return native_dataset, train_loader, train_sampler
+
+    train_set = ConcatDataset([train_sets[head] for head in heads])
+    train_sampler = None
+    if args.distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_set,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=(not args.lbfgs),
+            seed=args.seed,
+        )
+    train_loader = torch_geometric.dataloader.DataLoader(
+        dataset=train_set,
+        batch_size=args.batch_size,
+        sampler=train_sampler,
+        shuffle=(train_sampler is None),
+        drop_last=(train_sampler is None and not args.lbfgs),
+        pin_memory=args.pin_memory,
+        num_workers=args.num_workers,
+        generator=torch.Generator().manual_seed(args.seed),
+    )
+    return train_set, train_loader, train_sampler
+
+
 def run(args) -> None:
     """
     This script runs the training/fine tuning for mace
@@ -711,6 +779,8 @@ def run(args) -> None:
             head_config=head_config,
             heads=heads,
             collection=head_config.collections.train,
+            lmdb_backend=args.lmdb_backend,
+            lmdb_max_open_shards=args.lmdb_max_open_shards,
             )
             train_datasets.append(dataset)
             logging.debug(f"Successfully loaded dataset from ASE files: {ase_files}")
@@ -722,6 +792,8 @@ def run(args) -> None:
             z_table=z_table,
             head_config=head_config,
             heads=heads,
+            lmdb_backend=args.lmdb_backend,
+            lmdb_max_open_shards=args.lmdb_max_open_shards,
             )
             train_datasets.append(dataset)
             logging.debug(f"Successfully loaded dataset from non-ASE file: {file}")
@@ -745,6 +817,8 @@ def run(args) -> None:
                     head_config=head_config,
                     heads=heads,
                     collection=head_config.collections.valid,
+                    lmdb_backend=args.lmdb_backend,
+                    lmdb_max_open_shards=args.lmdb_max_open_shards,
                 )
                 valid_datasets.append(valid_dataset)
                 logging.debug(f"Successfully loaded validation dataset from ASE files: {valid_ase_files}")
@@ -755,6 +829,8 @@ def run(args) -> None:
                 z_table=z_table,
                 head_config=head_config,
                 heads=heads,
+                lmdb_backend=args.lmdb_backend,
+                lmdb_max_open_shards=args.lmdb_max_open_shards,
             )
                 valid_datasets.append(valid_dataset)
                 logging.debug(f"Successfully loaded validation dataset from {valid_file}")
@@ -782,29 +858,29 @@ def run(args) -> None:
             dataset_size = len(train_sets[head_config.head_name])
         logging.info(f"Head '{head_config.head_name}' training dataset size: {dataset_size}")
 
-        train_loader_head = torch_geometric.dataloader.DataLoader(
-            dataset=train_sets[head_config.head_name],
-            batch_size=args.batch_size,
-            shuffle=True,
-            drop_last=(not args.lbfgs),
-            pin_memory=args.pin_memory,
-            num_workers=args.num_workers,
-            generator=torch.Generator().manual_seed(args.seed),
-        )
-        head_config.train_loader = train_loader_head
+        if args.batch_sampling != "shard_window_atom_balanced":
+            train_loader_head = torch_geometric.dataloader.DataLoader(
+                dataset=train_sets[head_config.head_name],
+                batch_size=args.batch_size,
+                shuffle=True,
+                drop_last=(not args.lbfgs),
+                pin_memory=args.pin_memory,
+                num_workers=args.num_workers,
+                generator=torch.Generator().manual_seed(args.seed),
+            )
+            head_config.train_loader = train_loader_head
 
-    # concatenate all the trainsets
-    train_set = ConcatDataset([train_sets[head] for head in heads])
-    train_sampler, valid_sampler = None, None
+    train_set, train_loader, train_sampler = _build_train_loader_and_sampler(
+        train_sets,
+        heads,
+        args,
+        world_size=world_size,
+        rank=rank,
+    )
+    if args.batch_sampling == "shard_window_atom_balanced":
+        head_configs[0].train_loader = train_loader
+    valid_sampler = None
     if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(
-            train_set,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True,
-            drop_last=(not args.lbfgs),
-            seed=args.seed,
-        )
         valid_samplers = {}
         for head, valid_set in valid_sets.items():
             valid_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -816,17 +892,6 @@ def run(args) -> None:
                 seed=args.seed,
             )
             valid_samplers[head] = valid_sampler
-
-    train_loader = torch_geometric.dataloader.DataLoader(
-        dataset=train_set,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-        shuffle=(train_sampler is None),
-        drop_last=(train_sampler is None and not args.lbfgs),
-        pin_memory=args.pin_memory,
-        num_workers=args.num_workers,
-        generator=torch.Generator().manual_seed(args.seed),
-    )
 
     valid_loaders = {heads[i]: None for i in range(len(heads))}
     if not isinstance(valid_sets, dict):

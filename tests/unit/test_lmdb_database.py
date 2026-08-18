@@ -3,6 +3,7 @@ import tempfile
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 from ase.build import molecule
 from ase.calculators.singlepoint import SinglePointCalculator
@@ -205,3 +206,60 @@ def test_load_dataset_for_path_forwards_key_specification():
         item = dataset[0]
         assert float(item.total_charge) == charge
         assert float(item.total_spin) == spin
+
+
+def test_load_dataset_for_path_selects_native_omat_only_when_requested(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "db_0.aselmdb").touch()
+    head_config = SimpleNamespace(
+        head_name="Default", key_specification=KeySpecification.from_defaults()
+    )
+    native_calls = []
+    ase_calls = []
+
+    monkeypatch.setattr(
+        "mace.tools.run_train_utils.data.OMatLMDBDataset",
+        lambda *args, **kwargs: native_calls.append((args, kwargs)) or "native",
+    )
+    monkeypatch.setattr(
+        "mace.tools.run_train_utils.data.LMDBDataset",
+        lambda *args, **kwargs: ase_calls.append((args, kwargs)) or "ase",
+    )
+
+    common = {
+        "file_path": tmp_path,
+        "r_max": 5.0,
+        "z_table": AtomicNumberTable([1, 8]),
+        "heads": ["Default"],
+        "head_config": head_config,
+    }
+    assert load_dataset_for_path(**common) == "ase"
+    assert (
+        load_dataset_for_path(
+            **common, lmdb_backend="omat_direct", lmdb_max_open_shards=3
+        )
+        == "native"
+    )
+
+    assert len(ase_calls) == 1
+    assert len(native_calls) == 1
+    assert native_calls[0][1]["max_open_shards"] == 3
+
+
+def test_native_omat_dispatch_requires_a_directory(tmp_path):
+    shard = tmp_path / "db_0.aselmdb"
+    shard.touch()
+    head_config = SimpleNamespace(
+        head_name="Default", key_specification=KeySpecification.from_defaults()
+    )
+
+    with pytest.raises(ValueError, match="directory"):
+        load_dataset_for_path(
+            file_path=shard,
+            r_max=5.0,
+            z_table=AtomicNumberTable([1, 8]),
+            heads=["Default"],
+            head_config=head_config,
+            lmdb_backend="omat_direct",
+        )

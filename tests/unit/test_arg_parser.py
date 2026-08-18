@@ -22,6 +22,7 @@ from mace.tools.arg_parser import (
     build_default_arg_parser,
     build_preprocess_arg_parser,
     check_float_or_none,
+    positive_int,
     read_yaml,
     str2bool,
 )
@@ -83,6 +84,10 @@ def test_default_parser_critical_defaults():
     assert args.lr == 0.01
     assert args.max_num_epochs == 2048
     assert args.compile_training is False
+    assert args.lmdb_backend == "ase"
+    assert args.batch_sampling == "random"
+    assert args.lmdb_shard_window == 8
+    assert args.lmdb_max_open_shards == 8
     assert args.scaling == "rms_forces_scaling"
     assert args.seed == 123
 
@@ -106,6 +111,27 @@ def test_compile_training_flag_is_opt_in():
         action for action in parser._actions if action.dest == "compile_training"
     )
     assert "distributed" in compile_action.help
+
+
+def test_native_omat_lmdb_options_are_explicit():
+    args = build_default_arg_parser().parse_args(
+        MINIMAL_ARGV
+        + [
+            "--lmdb_backend",
+            "omat_direct",
+            "--batch_sampling",
+            "shard_window_atom_balanced",
+            "--lmdb_shard_window",
+            "16",
+            "--lmdb_max_open_shards",
+            "4",
+        ]
+    )
+
+    assert args.lmdb_backend == "omat_direct"
+    assert args.batch_sampling == "shard_window_atom_balanced"
+    assert args.lmdb_shard_window == 16
+    assert args.lmdb_max_open_shards == 4
 
 
 def test_stage_two_alias_maps_to_swa_dest():
@@ -171,6 +197,8 @@ def test_cli_flag_overrides_yaml_config(tmp_path):
         ("--loss", "not_a_loss"),
         ("--model", "NotAModel"),
         ("--error_table", "bogus"),
+        ("--lmdb_backend", "native"),
+        ("--batch_sampling", "atom_budget"),
     ],
 )
 def test_invalid_choice_raises_system_exit(flag, bad_value, capsys):
@@ -228,6 +256,16 @@ def test_check_float_or_none():
     assert check_float_or_none("None") is None
     with pytest.raises(argparse.ArgumentTypeError):
         check_float_or_none("abc")
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5"])
+def test_positive_int_rejects_non_positive_or_non_integral_values(value):
+    with pytest.raises(argparse.ArgumentTypeError):
+        positive_int(value)
+
+
+def test_positive_int_accepts_positive_values():
+    assert positive_int("7") == 7
 
 
 def test_read_yaml(tmp_path):

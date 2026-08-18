@@ -503,6 +503,30 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         default=0,
     )
     parser.add_argument(
+        "--lmdb_backend",
+        choices=("ase", "omat_direct"),
+        default="ase",
+        help="LMDB reader implementation",
+    )
+    parser.add_argument(
+        "--batch_sampling",
+        choices=("random", "shard_window_atom_balanced"),
+        default="random",
+        help="Training batch sampling policy",
+    )
+    parser.add_argument(
+        "--lmdb_shard_window",
+        type=positive_int,
+        default=8,
+        help="Number of OMat shards balanced at a time",
+    )
+    parser.add_argument(
+        "--lmdb_max_open_shards",
+        type=positive_int,
+        default=8,
+        help="Maximum LMDB environments open in each worker",
+    )
+    parser.add_argument(
         "--pin_memory",
         help="Pin memory for data loading",
         default=True,
@@ -1398,6 +1422,16 @@ def check_float_or_none(value: str) -> Optional[float]:
                 f"{value} is an invalid value (float or None)"
             ) from None
         return None
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value} is not an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"{value} must be positive")
+    return parsed
 
 
 def str2bool(value):

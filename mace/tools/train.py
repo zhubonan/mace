@@ -19,7 +19,6 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.optim import LBFGS
 from torch.optim.swa_utils import SWALR, AveragedModel
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 from torch_ema import ExponentialMovingAverage
 from torchmetrics import Metric
 
@@ -207,7 +206,7 @@ def train(
     plotter: TrainingPlotter = None,
     distributed_model: Optional[DistributedDataParallel] = None,
     distributed_device_ids: Optional[List[int]] = None,
-    train_sampler: Optional[DistributedSampler] = None,
+    train_sampler: Optional[Any] = None,
     rank: Optional[int] = 0,
     data_aug_magmom: Optional[bool] = False,
     compile_training: bool = False,
@@ -287,7 +286,7 @@ def train(
                 swa.scheduler.step()
 
         # Train
-        if distributed:
+        if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
             train_sampler.set_epoch(epoch)
         if "ScheduleFree" in type(optimizer).__name__:
             optimizer.train()
