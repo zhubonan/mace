@@ -25,11 +25,14 @@ are qualified below.
 
 ## Architecture
 
-`OMatLMDBDataset` builds a lightweight immutable index from the checked-in
+`OMatLMDBDataset` builds a compact immutable index from the checked-in
 manifest, maps a global row to a shard in logarithmic time, and opens LMDB
-environments lazily through a process-local bounded LRU. Official zlib/orjson
-rows are decoded directly into a MACE `Configuration`. Each worker owns its
-own transactions and environments; fork, spawn, and pickle reset inherited
+environments lazily through a process-local bounded LRU. Manifest startup
+fails closed on stale row counts, invalid `natoms`, or a nominally empty shard
+that has LMDB entries. Validating all 5,300 metadata files and 100,824,585 rows
+took 21.85 seconds on the qualification host. Official zlib/orjson rows are
+decoded directly into a MACE `Configuration`. Each worker owns its own
+transactions and environments; fork, spawn, and pickle reset inherited
 ownership.
 
 `ShardWindowAtomBalancedBatchSampler` shuffles shards deterministically for
@@ -161,7 +164,8 @@ PyTorch 2.11.0+cu128, e3nn 0.4.4, IEEE FP32 (both CUDA matmul and cuDNN TF32
 disabled), one RTX 5090, batch 128, four warmups, and 256 timed full
 energy/force/stress optimizer steps. It ran three order-balanced repetitions
 at 8 and 16 workers. The HDF5 and native-random cases used the same 1,000
-official rows and passed exact batch-shape and first-loss parity.
+official rows and agreed exactly on the complete batch-shape trajectory and
+first scalar loss. This does not claim tensor-exact equality of every input.
 
 | Input/sampling | Workers | Median structures/s | Active SM | Active power | Power limit |
 |---|---:|---:|---:|---:|---:|
@@ -189,6 +193,16 @@ Compact summary:
 
 ```text
 .profiling/mace-hdf5-gpu-2026-08-13/phase44/gpu-matrix-summary.json
+```
+
+It is the direct verifier output from:
+
+```bash
+<runtime> .profiling/mace-hdf5-gpu-2026-08-13/phase44/scripts/verify_phase44.py \
+  .profiling/mace-hdf5-gpu-2026-08-13/phase44/gpu-matrix-r3 \
+  --source-revision c7b34672efbb36594556aac5981f6facb4ab0d40 \
+  --world-size 1 --repetitions 3 \
+  --output .profiling/mace-hdf5-gpu-2026-08-13/phase44/gpu-matrix-summary.json
 ```
 
 The raw matrix is intentionally untracked because it contains 18 rank JSONs,

@@ -60,31 +60,13 @@ class OMatShardIndex:
         shard = self.shards[shard_index]
         if shard.metadata_path is None:
             return np.empty(0, dtype=np.int64)
-        with np.load(shard.metadata_path, allow_pickle=False) as metadata:
-            if "natoms" not in metadata:
-                raise ValueError(f"Missing natoms in {shard.metadata_path}")
-            raw_natoms = metadata["natoms"]
-        if raw_natoms.ndim != 1:
-            raise ValueError(
-                f"natoms metadata must be one-dimensional: {shard.metadata_path}"
-            )
+        raw_natoms = _load_validated_natoms(shard.metadata_path)
         if len(raw_natoms) != shard.length:
             raise ValueError(
                 f"natoms length {len(raw_natoms)} does not match shard length "
                 f"{shard.length}: {shard.metadata_path}"
             )
-        if not len(raw_natoms):
-            return np.empty(0, dtype=np.int64)
-        if not np.issubdtype(raw_natoms.dtype, np.integer):
-            raise ValueError(
-                "natoms metadata must have integer dtype: " f"{shard.metadata_path}"
-            )
-        natoms = np.asarray(raw_natoms, dtype=np.int64)
-        if np.any(natoms < 1):
-            raise ValueError(
-                f"natoms metadata must be strictly positive: {shard.metadata_path}"
-            )
-        return natoms
+        return np.asarray(raw_natoms, dtype=np.int64)
 
 
 def _normalize_roots(
@@ -113,6 +95,39 @@ def _metadata_path(shard_path: Path) -> Path:
     return shard_path.with_name(f"metadata_db_{suffix}.npz")
 
 
+def _load_validated_natoms(metadata_path: Path) -> np.ndarray:
+    with np.load(metadata_path, allow_pickle=False) as metadata:
+        if "natoms" not in metadata:
+            raise ValueError(f"Missing natoms in {metadata_path}")
+        raw_natoms = metadata["natoms"]
+    if raw_natoms.ndim != 1:
+        raise ValueError(f"natoms metadata must be one-dimensional: {metadata_path}")
+    if not len(raw_natoms):
+        return np.empty(0, dtype=np.int64)
+    if not np.issubdtype(raw_natoms.dtype, np.integer):
+        raise ValueError(f"natoms metadata must have integer dtype: {metadata_path}")
+    natoms = np.asarray(raw_natoms, dtype=np.int64)
+    if np.any(natoms < 1):
+        raise ValueError(f"natoms metadata must be strictly positive: {metadata_path}")
+    return natoms
+
+
+def _lmdb_entry_count(shard_path: Path) -> int:
+    environment = lmdb.open(
+        str(shard_path),
+        subdir=False,
+        readonly=True,
+        lock=False,
+        readahead=False,
+        meminit=False,
+    )
+    try:
+        with environment.begin(write=False) as transaction:
+            return int(transaction.stat()["entries"])
+    finally:
+        environment.close()
+
+
 def _metadata_length(shard_path: Path) -> tuple[Path | None, int]:
     metadata_path = _metadata_path(shard_path)
     if metadata_path.is_file():
@@ -126,19 +141,7 @@ def _metadata_length(shard_path: Path) -> tuple[Path | None, int]:
                 )
             return metadata_path.resolve(), int(len(natoms))
 
-    environment = lmdb.open(
-        str(shard_path),
-        subdir=False,
-        readonly=True,
-        lock=False,
-        readahead=False,
-        meminit=False,
-    )
-    try:
-        with environment.begin(write=False) as transaction:
-            entries = int(transaction.stat()["entries"])
-    finally:
-        environment.close()
+    entries = _lmdb_entry_count(shard_path)
     if entries:
         raise ValueError(f"Missing metadata for non-empty shard {shard_path}")
     return None, 0
@@ -203,12 +206,19 @@ def _build_from_manifest(root: Path, manifest: Path) -> OMatShardIndex:
         metadata_value = entry.get("metadata")
         if metadata_value is None:
             metadata_path = None
-            if rows:
+            lmdb_entries = _lmdb_entry_count(shard_path)
+            if rows or lmdb_entries:
                 raise ValueError(f"Missing metadata for non-empty shard {shard_path}")
         elif isinstance(metadata_value, str):
             metadata_path = _safe_manifest_path(root, metadata_value, field="metadata")
             if not metadata_path.is_file():
                 raise FileNotFoundError(metadata_path)
+            metadata_rows = len(_load_validated_natoms(metadata_path))
+            if metadata_rows != rows:
+                raise ValueError(
+                    f"natoms length {metadata_rows} does not match manifest row "
+                    f"count {rows}: {metadata_path}"
+                )
         else:
             raise ValueError(f"Invalid metadata path in {manifest}")
         shards.append(

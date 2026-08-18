@@ -2,12 +2,12 @@
   "acceptance": {
     "balanced_within_two_percent": true,
     "compiled_without_fallback": true,
-    "exact_hdf5_native_input_parity": true,
+    "matched_batch_shapes_and_first_loss": true,
     "stable_dynamo_graph": true
   },
   "adapter_sha256": "3bd770aa9c4c4d9d1cea0b6c5d3219d4aae9db0bee21685168728245918365f9",
-  "benchmark_sha256": "f8d3185ff280d1a5cda0f741305f025beba3fb6b805e4b71bccda054d7c1a4c9",
   "batch_size_per_rank": 128,
+  "benchmark_sha256": "f8d3185ff280d1a5cda0f741305f025beba3fb6b805e4b71bccda054d7c1a4c9",
   "matmul_precision": "highest",
   "medians": {
     "hdf5_random_w16": 4026.2988655798385,
@@ -18,6 +18,7 @@
     "native_random_w8": 5197.9918176611345
   },
   "repetitions": 3,
+  "root": ".profiling/mace-hdf5-gpu-2026-08-13/phase44/gpu-matrix-r3",
   "runs": 18,
   "source_revision": "c7b34672efbb36594556aac5981f6facb4ab0d40",
   "telemetry_medians": {
@@ -41,5 +42,6 @@
     "native_random_w8_active_sm_mean_percent": 68.14285714285714
   },
   "timed_steps": 256,
-  "warmup_steps": 4
+  "warmup_steps": 4,
+  "world_size": 1
 }

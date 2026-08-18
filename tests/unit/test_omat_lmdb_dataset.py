@@ -267,6 +267,58 @@ def test_manifest_rejects_missing_shard_and_inconsistent_total(tmp_path):
         build_omat_shard_index(tmp_path, manifest=manifest)
 
 
+def test_manifest_rejects_row_count_that_disagrees_with_metadata(tmp_path):
+    write_metadata_shard(tmp_path / "family", "0", [4, 8])
+    manifest = tmp_path / OMAT_MANIFEST_NAME
+    manifest.write_text(
+        json.dumps(
+            {
+                "format": OMAT_MANIFEST_FORMAT,
+                "dataset_id": "OMat24",
+                "total_rows": 1,
+                "shards": [
+                    {
+                        "family": "family",
+                        "path": "family/db_0.aselmdb",
+                        "metadata": "family/metadata_db_0.npz",
+                        "rows": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="natoms length 2.*manifest row count 1"):
+        build_omat_shard_index(tmp_path, manifest=manifest)
+
+
+def test_manifest_rejects_nonempty_lmdb_declared_empty_without_metadata(tmp_path):
+    write_lmdb_without_metadata(tmp_path / "family", "0", nonempty=True)
+    manifest = tmp_path / OMAT_MANIFEST_NAME
+    manifest.write_text(
+        json.dumps(
+            {
+                "format": OMAT_MANIFEST_FORMAT,
+                "dataset_id": "OMat24",
+                "total_rows": 0,
+                "shards": [
+                    {
+                        "family": "family",
+                        "path": "family/db_0.aselmdb",
+                        "metadata": None,
+                        "rows": 0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Missing metadata for non-empty shard"):
+        build_omat_shard_index(tmp_path, manifest=manifest)
+
+
 def test_missing_metadata_is_allowed_only_for_an_empty_lmdb(tmp_path):
     empty = write_lmdb_without_metadata(tmp_path / "family", "0", nonempty=False)
     index = build_omat_shard_index(tmp_path)

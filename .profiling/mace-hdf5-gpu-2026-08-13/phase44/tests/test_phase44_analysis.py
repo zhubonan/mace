@@ -376,7 +376,20 @@ def test_gpu_matrix_verifier_accepts_complete_balanced_repetitions(tmp_path):
     )
 
     assert summary["runs"] == 18
-    assert summary["acceptance"]["balanced_within_two_percent"] is True
+    assert summary["source_revision"] == "abc123"
+    assert summary["world_size"] == 1
+    assert summary["repetitions"] == 3
+    assert summary["batch_size_per_rank"] == 128
+    assert summary["warmup_steps"] == 4
+    assert summary["timed_steps"] == 256
+    assert summary["matmul_precision"] == "highest"
+    assert summary["acceptance"] == {
+        "balanced_within_two_percent": True,
+        "compiled_without_fallback": True,
+        "matched_batch_shapes_and_first_loss": True,
+        "stable_dynamo_graph": True,
+    }
+    assert "exact_hdf5_native_input_parity" not in summary["acceptance"]
 
 
 def test_gpu_matrix_verifier_rejects_balanced_throughput_regression(tmp_path):

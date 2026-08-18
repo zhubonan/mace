@@ -274,13 +274,25 @@ def verify_gpu_matrix(
             )
     _require(balanced_ok, "balanced throughput regressed by more than 2%")
     return {
-        "root": str(root.resolve()),
+        "root": str(root),
         "runs": len(runs),
+        "source_revision": expected_source_revision,
+        "world_size": expected_world_size,
+        "repetitions": expected_repetitions,
+        "batch_size_per_rank": 128,
+        "warmup_steps": 4,
+        "timed_steps": 256,
+        "matmul_precision": "highest",
         "medians": medians,
         "telemetry_medians": telemetry_medians,
         "benchmark_sha256": next(iter(benchmark_hashes)),
         "adapter_sha256": next(iter(adapter_hashes)),
-        "acceptance": {"balanced_within_two_percent": balanced_ok},
+        "acceptance": {
+            "balanced_within_two_percent": balanced_ok,
+            "compiled_without_fallback": True,
+            "matched_batch_shapes_and_first_loss": True,
+            "stable_dynamo_graph": True,
+        },
     }
 
 
