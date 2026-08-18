@@ -1,3 +1,4 @@
+from .atom_balanced_sampler import ShardWindowAtomBalancedBatchSampler
 from .atomic_data import AtomicData
 from .hdf5_dataset import HDF5Dataset, dataset_from_sharded_hdf5
 from .lmdb_dataset import LMDBDataset
@@ -39,6 +40,7 @@ __all__ = [
     "config_from_atoms",
     "config_from_atoms_list",
     "AtomicData",
+    "ShardWindowAtomBalancedBatchSampler",
     "compute_average_E0s",
     "estimate_e0s_from_foundation",
     "save_dataset_as_HDF5",
