@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from torch.utils.data import ConcatDataset, Dataset
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -17,6 +18,10 @@ from benchmark_native_omat_lmdb import (  # noqa: E402
     benchmark_order,
     validate_benchmark_records,
 )
+from run_training_input_backend import (  # noqa: E402
+    RepeatedBalancedDistributedSampler,
+)
+from verify_phase44 import verify_gpu_matrix, verify_training_run  # noqa: E402
 
 from mace.data import OMatShard, OMatShardIndex  # noqa: E402
 
@@ -142,3 +147,185 @@ def test_cpu_benchmark_validator_fails_closed(mutation, match):
 
     with pytest.raises(ValueError, match=match):
         validate_benchmark_records(records, expected_samples=256, max_open_shards=4)
+
+
+class IndexDataset(Dataset):
+    def __init__(self, index):
+        self.shard_index = index
+
+    def __len__(self):
+        return len(self.shard_index)
+
+    def __getitem__(self, item):
+        return item
+
+
+def test_repeated_balanced_sampler_preserves_fixed_ddp_batches(tmp_path):
+    index = make_index(tmp_path, [[1, 2, 3, 4], [20, 21, 22, 23]])
+    source = IndexDataset(index)
+    repeated = ConcatDataset([source, source])
+    samplers = [
+        RepeatedBalancedDistributedSampler(
+            repeated,
+            num_replicas=2,
+            rank=rank,
+            batch_size=2,
+            seed=17,
+            window_shards=2,
+        )
+        for rank in range(2)
+    ]
+
+    rank_indices = [list(sampler) for sampler in samplers]
+    rank_batches = [
+        [indices[start : start + 2] for start in range(0, len(indices), 2)]
+        for indices in rank_indices
+    ]
+
+    assert all(len(batch) == 2 for batches in rank_batches for batch in batches)
+    assert len(rank_batches[0]) == len(rank_batches[1]) == 4
+    assert set(rank_indices[0]).isdisjoint(rank_indices[1])
+    assert all(
+        0 <= item < len(repeated) for indices in rank_indices for item in indices
+    )
+
+
+def training_record(*, policy, workers, repetition, rate=1000.0):
+    checksum_policy = "balanced" if policy == "native_balanced" else "random"
+    checksum = f"checksum-{checksum_policy}-{workers}-{repetition}"
+    return {
+        "rank": 0,
+        "world_size": 1,
+        "mode": "compiled",
+        "backend": "hybrid",
+        "derivative_mode": "positions",
+        "precision_policy": {
+            "requested": "highest",
+            "effective": "highest",
+            "cuda_matmul_allow_tf32": False,
+            "cudnn_allow_tf32": False,
+        },
+        "batch_size_per_rank": 128,
+        "num_workers": workers,
+        "warmup_steps": 4,
+        "timed_steps": 256,
+        "step_times_ms": [100.0] * 256,
+        "data_wait_times_ms": [1.0] * 256,
+        "step_period_times_ms": [128.0] * 256,
+        "losses": [1.0] * 256,
+        "batch_shapes": [{"structures": 128, "atoms": 512, "edges": 2048}] * 256,
+        "is_compiled": True,
+        "compilation_error": None,
+        "dynamo_counters_after_warmup": {"stats": {"unique_graphs": 1}},
+        "dynamo_counters_final": {"stats": {"unique_graphs": 1}},
+        "parameter_checksum": checksum,
+        "rank_checksums": [checksum],
+        "lmdb_backend": "hdf5" if policy == "hdf5_random" else "omat_direct",
+        "batch_sampling": (
+            "shard_window_atom_balanced" if policy == "native_balanced" else "random"
+        ),
+        "source_revision": "abc123",
+        "benchmark_sha256": "b" * 64,
+        "adapter_sha256": "a" * 64,
+        "repetition": repetition,
+        "end_to_end_structures_per_second": rate,
+    }
+
+
+def write_training_run(root, policy, workers, repetition, *, rate=1000.0):
+    path = root / f"r{repetition}-{policy}-w{workers}"
+    path.mkdir(parents=True)
+    import json
+
+    (path / "rank-0.json").write_text(
+        json.dumps(
+            training_record(
+                policy=policy,
+                workers=workers,
+                repetition=repetition,
+                rate=rate,
+            )
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_training_run_verifier_fails_on_graph_growth(tmp_path):
+    path = write_training_run(tmp_path, "native_balanced", 8, 0)
+    import json
+
+    record_path = path / "rank-0.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["dynamo_counters_final"] = {"stats": {"unique_graphs": 2}}
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="graph counters"):
+        verify_training_run(
+            path,
+            expected_world_size=1,
+            expected_source_revision="abc123",
+        )
+
+
+def test_training_run_verifier_rejects_cudnn_tf32(tmp_path):
+    path = write_training_run(tmp_path, "native_balanced", 8, 0)
+    import json
+
+    record_path = path / "rank-0.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["precision_policy"]["cudnn_allow_tf32"] = True
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cuDNN TF32"):
+        verify_training_run(
+            path,
+            expected_world_size=1,
+            expected_source_revision="abc123",
+        )
+
+
+def test_gpu_matrix_verifier_accepts_complete_balanced_repetitions(tmp_path):
+    for repetition in range(3):
+        for workers in (8, 16):
+            write_training_run(tmp_path, "hdf5_random", workers, repetition)
+            write_training_run(tmp_path, "native_random", workers, repetition)
+            write_training_run(
+                tmp_path,
+                "native_balanced",
+                workers,
+                repetition,
+                rate=990.0,
+            )
+
+    summary = verify_gpu_matrix(
+        tmp_path,
+        expected_source_revision="abc123",
+        expected_world_size=1,
+        expected_repetitions=3,
+    )
+
+    assert summary["runs"] == 18
+    assert summary["acceptance"]["balanced_within_two_percent"] is True
+
+
+def test_gpu_matrix_verifier_rejects_balanced_throughput_regression(tmp_path):
+    for repetition in range(3):
+        for workers in (8, 16):
+            write_training_run(tmp_path, "hdf5_random", workers, repetition)
+            write_training_run(tmp_path, "native_random", workers, repetition)
+            write_training_run(
+                tmp_path,
+                "native_balanced",
+                workers,
+                repetition,
+                rate=900.0,
+            )
+
+    with pytest.raises(ValueError, match="more than 2%"):
+        verify_gpu_matrix(
+            tmp_path,
+            expected_source_revision="abc123",
+            expected_world_size=1,
+            expected_repetitions=3,
+        )
