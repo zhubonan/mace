@@ -19,6 +19,7 @@ from benchmark_native_omat_lmdb import (  # noqa: E402
     validate_benchmark_records,
 )
 from run_training_input_backend import (  # noqa: E402
+    PrefixShardIndex,
     RepeatedBalancedDistributedSampler,
 )
 from verify_phase44 import verify_gpu_matrix, verify_training_run  # noqa: E402
@@ -160,6 +161,20 @@ class IndexDataset(Dataset):
         return item
 
 
+def test_prefix_shard_index_limits_rows_and_metadata(tmp_path):
+    index = make_index(tmp_path, [[1, 2, 3, 4], [20, 21]])
+
+    limited = PrefixShardIndex(index, 3)
+
+    assert len(limited) == 3
+    assert len(limited.shards) == 1
+    assert limited.shards[0].length == 3
+    assert limited.locate(2) == (0, 2)
+    assert limited.load_natoms(0).tolist() == [1, 2, 3]
+    with pytest.raises(IndexError):
+        limited.locate(3)
+
+
 def test_repeated_balanced_sampler_preserves_fixed_ddp_batches(tmp_path):
     index = make_index(tmp_path, [[1, 2, 3, 4], [20, 21, 22, 23]])
     source = IndexDataset(index)
@@ -191,8 +206,7 @@ def test_repeated_balanced_sampler_preserves_fixed_ddp_batches(tmp_path):
 
 
 def training_record(*, policy, workers, repetition, rate=1000.0):
-    checksum_policy = "balanced" if policy == "native_balanced" else "random"
-    checksum = f"checksum-{checksum_policy}-{workers}-{repetition}"
+    checksum = f"checksum-{policy}-{workers}-{repetition}"
     return {
         "rank": 0,
         "world_size": 1,

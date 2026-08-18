@@ -88,6 +88,7 @@ run_case() {
         "MACE_PHASE44_LMDB_ROOT=$lmdb_root" \
         "MACE_PHASE44_WINDOW_SHARDS=8" \
         "MACE_PHASE44_MAX_OPEN_SHARDS=8" \
+        "MACE_PHASE44_RECORD_LIMIT=1000" \
         "MACE_PHASE44_REPETITION=$repetition" \
         "MACE_PHASE44_SOURCE_REVISION=$source_revision" \
         "$launcher" compiled 1 > "$output_dir/run.log" 2>&1 || status=$?

@@ -8,6 +8,7 @@ import json
 import os
 import runpy
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -15,6 +16,35 @@ from torch.utils.data import ConcatDataset, Dataset, Sampler
 
 from mace import data
 from mace.tools import compile as mace_compile
+
+
+class PrefixShardIndex:
+    """A verifier-only first-shard prefix without copying official metadata."""
+
+    def __init__(self, index, length: int) -> None:
+        length = int(length)
+        if not index.shards or length < 1 or length > index.shards[0].length:
+            raise ValueError("record limit must fit within the first OMat shard")
+        self._index = index
+        self.roots = index.roots
+        self.dataset_id = f"{index.dataset_id}:first-shard-prefix-{length}"
+        self.shards = (replace(index.shards[0], length=length),)
+        self.cumulative_ends = (length,)
+
+    def __len__(self) -> int:
+        return self.cumulative_ends[0]
+
+    def locate(self, index: int) -> tuple[int, int]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return 0, index
+
+    def load_natoms(self, shard_index: int):
+        if shard_index != 0:
+            raise IndexError(shard_index)
+        return self._index.load_natoms(0)[: len(self)]
 
 
 class NativeOMatDatasetAdapter(Dataset):
@@ -33,12 +63,21 @@ class NativeOMatDatasetAdapter(Dataset):
             head=kwargs.get("head", "Default"),
             max_open_shards=int(os.environ.get("MACE_PHASE44_MAX_OPEN_SHARDS", "8")),
         )
-        self.shard_index = self.dataset.shard_index
+        record_limit = int(os.environ.get("MACE_PHASE44_RECORD_LIMIT", "0"))
+        self.shard_index = (
+            PrefixShardIndex(self.dataset.shard_index, record_limit)
+            if record_limit
+            else self.dataset.shard_index
+        )
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.shard_index)
 
     def __getitem__(self, index):
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
         return self.dataset[index]
 
 
@@ -153,6 +192,7 @@ def _annotate_result(
             "lmdb_max_open_shards": int(
                 os.environ.get("MACE_PHASE44_MAX_OPEN_SHARDS", "8")
             ),
+            "record_limit": int(os.environ.get("MACE_PHASE44_RECORD_LIMIT", "0")),
         }
     )
     result_path.write_text(

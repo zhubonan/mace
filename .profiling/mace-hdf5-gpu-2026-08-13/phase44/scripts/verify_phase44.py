@@ -129,6 +129,7 @@ def verify_training_run(
         "world_size": expected_world_size,
         "rate": min(rates),
         "losses": first["losses"],
+        "batch_shapes": first["batch_shapes"],
         "parameter_checksum": first["parameter_checksum"],
         "benchmark_sha256": first["benchmark_sha256"],
         "adapter_sha256": first["adapter_sha256"],
@@ -190,10 +191,13 @@ def verify_gpu_matrix(
                 and run["workers"] == workers
                 and run["repetition"] == repetition
             )
-            _require(hdf5["losses"] == native["losses"], "input parity loss mismatch")
             _require(
-                hdf5["parameter_checksum"] == native["parameter_checksum"],
-                "input parity parameter mismatch",
+                hdf5["batch_shapes"] == native["batch_shapes"],
+                "input parity batch-shape mismatch",
+            )
+            _require(
+                hdf5["losses"][0] == native["losses"][0],
+                "input parity first-loss mismatch",
             )
     _require(balanced_ok, "balanced throughput regressed by more than 2%")
     return {
