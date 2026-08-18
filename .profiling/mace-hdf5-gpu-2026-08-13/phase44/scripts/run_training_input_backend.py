@@ -129,6 +129,11 @@ class RepeatedBalancedDistributedSampler(Sampler[int]):
             raise ValueError("Repeated balanced datasets must share one shard index")
         prototype = self._sampler(repeat=0)
         self._rank_batches_per_repeat = len(prototype)
+        full_batches = len(dataset) // self.batch_size
+        usable_batches = full_batches - full_batches % self.num_replicas
+        self._target_rank_batches = usable_batches // self.num_replicas
+        if self._target_rank_batches and not self._rank_batches_per_repeat:
+            raise ValueError("Each repeated source must contain one complete DDP pack")
 
     def _sampler(self, *, repeat: int):
         return data.ShardWindowAtomBalancedBatchSampler(
@@ -145,17 +150,21 @@ class RepeatedBalancedDistributedSampler(Sampler[int]):
         self.epoch = int(epoch)
 
     def __iter__(self):
-        offset = 0
-        for repeat, source in enumerate(self.dataset.datasets):
+        yielded_batches = 0
+        repeat = 0
+        while yielded_batches < self._target_rank_batches:
+            source_index = repeat % len(self.dataset.datasets)
+            offset = source_index * self._source_length
             for batch in self._sampler(repeat=repeat):
+                if yielded_batches == self._target_rank_batches:
+                    return
                 for local_index in batch:
                     yield offset + int(local_index)
-            offset += len(source)
+                yielded_batches += 1
+            repeat += 1
 
     def __len__(self) -> int:
-        return (
-            len(self.dataset.datasets) * self._rank_batches_per_repeat * self.batch_size
-        )
+        return self._target_rank_batches * self.batch_size
 
 
 def _sha256(path: Path) -> str:

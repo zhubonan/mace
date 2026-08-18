@@ -205,6 +205,25 @@ def test_repeated_balanced_sampler_preserves_fixed_ddp_batches(tmp_path):
     )
 
 
+def test_repeated_balanced_sampler_fills_target_after_per_shard_drop(tmp_path):
+    index = make_index(tmp_path, [[1, 2, 3, 4, 5]])
+    source = IndexDataset(index)
+    repeated = ConcatDataset([source, source])
+    sampler = RepeatedBalancedDistributedSampler(
+        repeated,
+        num_replicas=1,
+        rank=0,
+        batch_size=2,
+        seed=17,
+        window_shards=1,
+    )
+
+    indices = list(sampler)
+
+    assert len(sampler) == len(indices) == 10
+    assert all(0 <= item < len(repeated) for item in indices)
+
+
 def training_record(*, policy, workers, repetition, rate=1000.0):
     checksum = f"checksum-{policy}-{workers}-{repetition}"
     return {
