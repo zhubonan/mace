@@ -48,18 +48,25 @@ def flatten(rank_batches):
     return [item for batch in rank_batches for item in batch]
 
 
-def make_rank_samplers(index, *, epoch=0, window_shards=2):
+def make_rank_samplers(
+    index,
+    *,
+    epoch=0,
+    window_shards=2,
+    batch_size=4,
+    num_replicas=2,
+):
     return [
         ShardWindowAtomBalancedBatchSampler(
             index,
-            batch_size=4,
+            batch_size=batch_size,
             seed=17,
             epoch=epoch,
-            num_replicas=2,
+            num_replicas=num_replicas,
             rank=rank,
             window_shards=window_shards,
         )
-        for rank in range(2)
+        for rank in range(num_replicas)
     ]
 
 
@@ -89,6 +96,82 @@ def test_sampler_is_deterministic_and_set_epoch_changes_order(tmp_path):
     second.set_epoch(1)
     assert list(first) == list(second)
     assert list(first) != epoch_zero
+
+
+def test_sampler_balances_total_atoms_between_batches(tmp_path):
+    sizes = list(range(1, 65))
+    index = make_index(tmp_path, [sizes])
+    rank_batches = [
+        list(sampler) for sampler in make_rank_samplers(index, window_shards=1)
+    ]
+    totals = [
+        sum(sizes[item] for item in batch)
+        for batches in rank_batches
+        for batch in batches
+    ]
+
+    assert totals == [130] * 16
+
+
+def test_sampler_balances_total_atoms_across_size_clustered_shard_windows(tmp_path):
+    tiny_shards = [[1] * 256 for _ in range(8)]
+    large_shards = [[88] * 256 for _ in range(8)]
+    index = make_index(tmp_path, [*tiny_shards, *large_shards])
+    rank_batches = [
+        list(sampler)
+        for sampler in make_rank_samplers(
+            index,
+            window_shards=8,
+            batch_size=64,
+            num_replicas=4,
+        )
+    ]
+    sizes = np.asarray(([1] * (8 * 256)) + ([88] * (8 * 256)))
+    totals = np.asarray(
+        [
+            sum(sizes[item] for item in batch)
+            for batches in rank_batches
+            for batch in batches
+        ]
+    )
+
+    assert np.quantile(totals, 0.99) <= 3_200
+    assert totals.max() <= 3_200
+
+
+def test_sampler_weights_shard_balancing_by_row_count(tmp_path):
+    shard_sizes = [
+        [1] * 4_096,
+        [2] * 4_096,
+        [50],
+        [51],
+        [52],
+        [53],
+        [54],
+        [55],
+        [88] * 4_096,
+    ]
+    index = make_index(tmp_path, shard_sizes)
+    rank_batches = [
+        list(sampler)
+        for sampler in make_rank_samplers(
+            index,
+            window_shards=4,
+            batch_size=64,
+            num_replicas=2,
+        )
+    ]
+    sizes = np.asarray([item for shard in shard_sizes for item in shard])
+    totals = np.asarray(
+        [
+            sum(sizes[item] for item in batch)
+            for batches in rank_batches
+            for batch in batches
+        ]
+    )
+
+    assert np.quantile(totals, 0.99) <= 3_200
+    assert totals.max() <= 3_200
 
 
 def test_sampler_carries_incomplete_rows_and_ddp_packs_across_windows(tmp_path):
@@ -147,11 +230,28 @@ def test_sampler_loads_metadata_in_bounded_windows(tmp_path):
 
     iterator = iter(sampler)
     next(iterator)
-    assert len(calls) <= 3
+    assert len(calls) <= 2 * sampler.window_shards
     list(iterator)
     assert sorted(calls) == list(range(7))
+    assert sampler.peak_planning_shards <= min(2 * sampler.window_shards, 16)
     assert sampler.peak_window_shards <= 3
     assert sampler.peak_window_rows <= 3 + sampler.batch_size - 1
+
+
+def test_sampler_caps_exact_shard_planning_for_large_windows(tmp_path):
+    index = make_index(tmp_path, [[value] * 64 for value in range(1, 33)])
+    sampler = ShardWindowAtomBalancedBatchSampler(
+        index,
+        batch_size=64,
+        seed=4,
+        window_shards=16,
+    )
+
+    first_batch = next(iter(sampler))
+
+    assert len(first_batch) == 64
+    assert sampler.peak_planning_shards <= 16
+    assert sampler.peak_window_shards <= 16
 
 
 @pytest.mark.parametrize(

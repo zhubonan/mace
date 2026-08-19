@@ -8,10 +8,11 @@
 **Goal:** Prevent rare OMat LMDB training OOMs by balancing total atoms among
 fixed-cardinality rank batches before DDP step assignment.
 
-**Architecture:** Keep the existing deterministic shuffled shard windows and
-bounded row/DDP carries. Replace contiguous sorted slicing with vectorized
-serpentine stripes so every batch samples the active window's atom-count
-distribution; retain total-atom sorting only for grouping similarly weighted
+**Architecture:** Keep deterministic shuffled shards and bounded row/DDP
+carries. Partition each two-window planning reservoir into two at-most-eight-
+shard access windows using row-weighted mean atoms, then replace contiguous row slicing with vectorized
+serpentine stripes so every batch samples its access window's atom-count
+distribution. Retain total-atom sorting only for grouping similarly weighted
 batches into DDP steps.
 
 **Tech Stack:** Python 3.12, NumPy, PyTorch `Sampler`, pytest, and the existing
@@ -23,7 +24,8 @@ OMat shard metadata/index.
 - Balance only by `natoms`; do not add edge metadata or change graph building.
 - Preserve deterministic `(seed, epoch)` behavior, disjoint ranks, equal rank
   steps, and epoch coverage with fewer than `batch_size * world_size` drops.
-- Preserve the `window_shards` metadata bound and bounded row/DDP carry.
+- Bound metadata planning to `min(2 * window_shards, 16)`, keep each emitted batch
+  within one `window_shards` access group, and preserve bounded row/DDP carry.
 - Do not change the CLI, model, loss, optimizer, checkpoint, or `.model` format.
 - Use red-green-refactor and preserve unrelated dirty-worktree changes.
 

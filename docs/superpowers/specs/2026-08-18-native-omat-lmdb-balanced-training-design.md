@@ -143,8 +143,8 @@ Introduce `ShardWindowAtomBalancedBatchSampler` with these hard invariants:
 - rank sample sets are disjoint;
 - only the final global incomplete batch and up to `world_size - 1` complete
   batches may be dropped to satisfy fixed batch and equal-rank-step semantics;
-- `seed`, `epoch`, dataset identity, rank, and world size determine the exact
-  sequence;
+- `seed`, `epoch`, dataset identity, rank, world size, and the bounded
+  two-window planning reservoir determine the exact sequence;
 - `set_epoch()` changes the permutation without changing coverage rules; and
 - memory is bounded by the active shard window and carry buffers, not total
   corpus size.
@@ -154,11 +154,17 @@ independent sampling with replacement.
 
 ### Window construction
 
-At each epoch, all non-empty shard IDs are deterministically shuffled and
-partitioned into bounded windows, defaulting to eight shards. For one window,
-the sampler loads only those official `natoms` arrays and constructs compact
-global indices for the window's rows. Equal-size records receive a seeded
-random tie-breaker before size ordering, preventing a fixed material order.
+At each epoch, all non-empty shard IDs are deterministically shuffled. The
+sampler loads a bounded planning reservoir of two windows, defaulting to 16
+shards and hard-capped at 16. It exhaustively partitions those shards into
+access windows of at most `window_shards` shards each. The objective first minimizes the worst row-weighted
+mean-atom deviation from the planning-reservoir mean, then row-count imbalance.
+The full metadata arrays are retained only for that planning reservoir, so they
+are read once. With the default, emitted batches still reference at most one
+eight-shard access window. This prevents a size-clustered shard window from
+defeating row-level balancing without a corpus-wide metadata scan or loss of
+the configured batch locality. Equal-size records receive a seeded random
+tie-breaker before size ordering, preventing a fixed material order.
 
 An incomplete row tail is selected deterministically before packing and is
 carried into the next window rather than dropped per shard. The remaining rows
@@ -171,13 +177,13 @@ epoch, only the global remainder allowed by the invariants is omitted.
 Likewise, complete batches that do not fill a `world_size` DDP pack are carried
 into the next window. They are not dropped at every window boundary.
 
-All batches derived from one window are emitted as one bounded scheduling
-region. Ordinary batches reference only shards in that window. The single
-row-tail batch formed at a window boundary may also reference the preceding
-window's bounded carry; likewise, up to `world_size - 1` complete batches may
-remain as the next window's DDP-pack carry. These explicit boundary cases may
-cause a small number of extra environment opens, but the reader's LRU remains
-a hard bound on active handles. They do not permit uniform record-level
+All batches derived from one balanced access window are emitted as one bounded
+scheduling region. Ordinary batches reference only shards in that window. The
+single row-tail batch formed at a window boundary may also reference the
+preceding window's bounded carry; likewise, up to `world_size - 1` complete
+batches may remain as the next window's DDP-pack carry. These explicit boundary
+cases may cause a small number of extra environment opens, but the reader's LRU
+remains a hard bound on active handles. They do not permit uniform record-level
 access across 5,300 files.
 
 ### DDP step balancing
