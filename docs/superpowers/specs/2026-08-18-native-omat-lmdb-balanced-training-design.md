@@ -38,6 +38,15 @@ contains one `natoms` array per non-empty shard. A read-only audit found:
 - 94.3% of adjacent records sharing the same atom count, but a mean equal-size
   run of only 17.6 records.
 
+Production replay exposed an additional hard requirement that the original
+design did not state strongly enough. Sorting by `natoms` and taking contiguous
+`batch_size` slices balances simultaneous ranks only after the batches exist;
+it does not balance batch totals. At batch size 64 that algorithm produced a
+median/p99/maximum of 768/5,632/10,752 atoms per rank batch. Job 543811 OOM'd
+at sampler step 1,915 on four batches containing 5,376--5,632 atoms. Therefore
+the sampler must balance total atoms among candidate batches before DDP pack
+assignment. Grouping structures of similar size into one batch is forbidden.
+
 Uniform record-level shuffling across thousands of files defeats a small
 LMDB handle cache and causes HDD seeks. Pure shard-local batching preserves
 I/O locality but does not control atom-count variation. A global 100.8-million
@@ -151,12 +160,16 @@ the sampler loads only those official `natoms` arrays and constructs compact
 global indices for the window's rows. Equal-size records receive a seeded
 random tie-breaker before size ordering, preventing a fixed material order.
 
-Rows are ordered by atom count and partitioned into fixed-size batches. An
-incomplete tail is carried into the next window rather than dropped per shard.
-The next window rebalances its rows together with that carry. At the end of
-the epoch, only the global remainder allowed by the invariants is omitted.
-Likewise, complete batches that do not fill a `world_size` DDP pack are
-carried into the next window. They are not dropped at every window boundary.
+An incomplete row tail is selected deterministically before packing and is
+carried into the next window rather than dropped per shard. The remaining rows
+are sorted by atom count, reshaped into `batch_size` stripes, every other stripe
+is reversed, and columns become batches. This vectorized serpentine layout
+gives every fixed-cardinality batch rows from across the active window's size
+distribution instead of creating homogeneous all-small and all-large batches.
+The next window rebalances its rows together with the carry. At the end of the
+epoch, only the global remainder allowed by the invariants is omitted.
+Likewise, complete batches that do not fill a `world_size` DDP pack are carried
+into the next window. They are not dropped at every window boundary.
 
 All batches derived from one window are emitted as one bounded scheduling
 region. Ordinary batches reference only shards in that window. The single
@@ -177,8 +190,9 @@ to ranks, and the packs themselves are shuffled before emission.
 Consequently, every DDP optimizer step uses the same number of structures on
 each rank and selects rank-local batches with similar predicted work. This
 reduces rank stragglers while avoiding a persistent rank-to-size association.
-Loss scaling continues to use the existing fixed structure count and global
-DDP reduction behavior.
+The serpentine construction separately reduces atom-total variation between
+optimizer steps across the epoch. Loss scaling continues to use the existing
+fixed structure count and global DDP reduction behavior.
 
 Atom count is the initial cost proxy because it is already available for all
 100.8 million structures without graph construction. Edge count may be
@@ -239,12 +253,15 @@ Implementation follows red-green-refactor development and must cover:
    corpus-sized Python index list.
 5. Fixed batch size, deterministic repeat, changed epoch order, no duplicates,
    disjoint DDP ranks, exact allowed-drop bounds, and equal rank step counts.
-6. Bounded shard-window membership and carry behavior across windows.
-7. Lower simultaneous-rank atom imbalance than the standard distributed
+6. Atom-total balance between batches on adversarial mixtures of tiny and
+   large structures, including a regression that fails for contiguous sorted
+   slicing.
+7. Bounded shard-window membership and carry behavior across windows.
+8. Lower simultaneous-rank atom imbalance than the standard distributed
    random sampler on both synthetic skewed data and the official metadata.
-8. DataLoader integration with zero and multiple workers, including real
+9. DataLoader integration with zero and multiple workers, including real
    `fork` and `spawn` contexts.
-9. Existing generic LMDB, HDF5, CLI/config, eager, compiled, DDP, checkpoint,
+10. Existing generic LMDB, HDF5, CLI/config, eager, compiled, DDP, checkpoint,
    and final `.model` compatibility.
 
 ## Qualification gates
