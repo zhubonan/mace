@@ -29,6 +29,15 @@ def normalize_file_paths(file_paths: Union[str, List[str]]) -> List[str]:
     raise ValueError(f"Unexpected file paths format: {type(file_paths)}")
 
 
+def _is_omat_root(path: Union[str, Path]) -> bool:
+    root = Path(path)
+    if not root.is_dir():
+        return False
+    if (root / data.OMAT_MANIFEST_NAME).is_file():
+        return True
+    return next(root.rglob("db_*.aselmdb"), None) is not None
+
+
 def load_dataset_for_path(
     file_path: Union[str, Path, List[str]],
     r_max: float,
@@ -53,15 +62,45 @@ def load_dataset_for_path(
     Returns:
         Loaded dataset
     """
+    if lmdb_backend not in ("ase", "omat_direct"):
+        raise ValueError(f"Unsupported LMDB backend: {lmdb_backend}")
     if isinstance(file_path, list):
         if len(file_path) == 1:
             file_path = file_path[0]
+    if (
+        isinstance(file_path, list)
+        and lmdb_backend == "omat_direct"
+        and all(_is_omat_root(path) for path in file_path)
+    ):
+        logging.info(f"Loading native OMat LMDB dataset from {file_path}")
+        return data.OMatLMDBDataset(
+            file_path,
+            r_max=r_max,
+            z_table=z_table,
+            heads=heads,
+            head=head_config.head_name,
+            max_open_shards=lmdb_max_open_shards,
+        )
     if isinstance(file_path, list):
         is_ase_readable = all(check_path_ase_read(p) for p in file_path)
         if not is_ase_readable:
             raise ValueError(
                 "Not all paths in the list are ASE readable, not supported"
             )
+    if (
+        isinstance(file_path, (str, Path))
+        and lmdb_backend == "omat_direct"
+        and _is_omat_root(file_path)
+    ):
+        logging.info(f"Loading native OMat LMDB dataset from {file_path}")
+        return data.OMatLMDBDataset(
+            file_path,
+            r_max=r_max,
+            z_table=z_table,
+            heads=heads,
+            head=head_config.head_name,
+            max_open_shards=lmdb_max_open_shards,
+        )
     if isinstance(file_path, (str, Path)):
         is_ase_readable = check_path_ase_read(str(file_path))
 
@@ -77,8 +116,6 @@ def load_dataset_for_path(
         ]
 
     filepath = Path(file_path)
-    if lmdb_backend not in ("ase", "omat_direct"):
-        raise ValueError(f"Unsupported LMDB backend: {lmdb_backend}")
     if filepath.is_dir():
 
         if filepath.name.endswith("_lmdb") or any(

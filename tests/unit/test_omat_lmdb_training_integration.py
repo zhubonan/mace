@@ -15,9 +15,48 @@ import torch
 from torch.utils.data import ConcatDataset
 
 from mace import data, tools
+from mace.cli import run_train
 from mace.cli.run_train import _build_train_loader_and_sampler
 
 train_tools = importlib.import_module("mace.tools.train")
+
+
+def test_native_omat_root_is_routed_without_ase_probe(tmp_path):
+    family = tmp_path / "family"
+    family.mkdir()
+    (family / "db_0.aselmdb").touch()
+
+    assert run_train._is_native_omat_input("omat_direct", [str(tmp_path)])
+    assert not run_train._is_native_omat_input("ase", [str(tmp_path)])
+
+
+def test_split_input_paths_routes_native_roots_as_one_dataset(tmp_path):
+    roots = []
+    for family_name in ("family_a", "family_b"):
+        family = tmp_path / family_name
+        family.mkdir()
+        (family / "db_0.aselmdb").touch()
+        roots.append(str(family))
+
+    ase_files, non_ase_files = run_train._split_input_paths(
+        "omat_direct", roots
+    )
+
+    assert ase_files == []
+    assert non_ase_files == [roots]
+
+
+def test_split_input_paths_accepts_native_validation_root(tmp_path):
+    family = tmp_path / "family"
+    family.mkdir()
+    (family / "db_0.aselmdb").touch()
+
+    ase_files, non_ase_files = run_train._split_input_paths(
+        "omat_direct", [str(tmp_path)]
+    )
+
+    assert ase_files == []
+    assert non_ase_files == [[str(tmp_path)]]
 
 
 def write_native_dataset(tmp_path, rows=4):

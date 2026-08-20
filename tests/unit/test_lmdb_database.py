@@ -247,6 +247,101 @@ def test_load_dataset_for_path_selects_native_omat_only_when_requested(
     assert native_calls[0][1]["max_open_shards"] == 3
 
 
+def test_explicit_native_omat_backend_accepts_nested_official_root(
+    tmp_path, monkeypatch
+):
+    family = tmp_path / "family"
+    family.mkdir()
+    (family / "db_0.aselmdb").touch()
+    head_config = SimpleNamespace(
+        head_name="Default", key_specification=KeySpecification.from_defaults()
+    )
+    native_calls = []
+
+    monkeypatch.setattr(
+        "mace.tools.run_train_utils.data.OMatLMDBDataset",
+        lambda *args, **kwargs: native_calls.append((args, kwargs)) or "native",
+    )
+    monkeypatch.setattr(
+        "mace.tools.run_train_utils.data.dataset_from_sharded_hdf5",
+        lambda *args, **kwargs: "hdf5",
+    )
+
+    result = load_dataset_for_path(
+        file_path=tmp_path,
+        r_max=5.0,
+        z_table=AtomicNumberTable([1, 8]),
+        heads=["Default"],
+        head_config=head_config,
+        lmdb_backend="omat_direct",
+        lmdb_max_open_shards=3,
+    )
+
+    assert result == "native"
+    assert len(native_calls) == 1
+
+
+def test_explicit_native_backend_does_not_hijack_hdf5_directory(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "train.h5").touch()
+    head_config = SimpleNamespace(
+        head_name="Default", key_specification=KeySpecification.from_defaults()
+    )
+    native_calls = []
+
+    monkeypatch.setattr(
+        "mace.tools.run_train_utils.data.OMatLMDBDataset",
+        lambda *args, **kwargs: native_calls.append((args, kwargs)) or "native",
+    )
+    monkeypatch.setattr(
+        "mace.tools.run_train_utils.data.dataset_from_sharded_hdf5",
+        lambda *args, **kwargs: "hdf5",
+    )
+
+    result = load_dataset_for_path(
+        file_path=tmp_path,
+        r_max=5.0,
+        z_table=AtomicNumberTable([1, 8]),
+        heads=["Default"],
+        head_config=head_config,
+        lmdb_backend="omat_direct",
+    )
+
+    assert result == "hdf5"
+    assert native_calls == []
+
+
+def test_explicit_native_backend_accepts_multiple_family_roots(tmp_path, monkeypatch):
+    roots = []
+    for family_name in ("family_a", "family_b"):
+        family = tmp_path / family_name
+        family.mkdir()
+        (family / "db_0.aselmdb").touch()
+        roots.append(str(family))
+    head_config = SimpleNamespace(
+        head_name="Default", key_specification=KeySpecification.from_defaults()
+    )
+    native_calls = []
+
+    monkeypatch.setattr(
+        "mace.tools.run_train_utils.data.OMatLMDBDataset",
+        lambda *args, **kwargs: native_calls.append((args, kwargs)) or "native",
+    )
+
+    result = load_dataset_for_path(
+        file_path=roots,
+        r_max=5.0,
+        z_table=AtomicNumberTable([1, 8]),
+        heads=["Default"],
+        head_config=head_config,
+        lmdb_backend="omat_direct",
+    )
+
+    assert result == "native"
+    assert native_calls[0][0][0] == roots
+
+
 def test_native_omat_dispatch_requires_a_directory(tmp_path):
     shard = tmp_path / "db_0.aselmdb"
     shard.touch()

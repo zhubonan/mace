@@ -52,6 +52,7 @@ from mace.tools.multihead_tools import (
     prepare_pt_head,
 )
 from mace.tools.run_train_utils import (
+    _is_omat_root,
     combine_datasets,
     load_dataset_for_path,
     normalize_file_paths,
@@ -93,6 +94,32 @@ def _validate_compile_training_args(args) -> None:
         return
     if args.lbfgs:
         raise ValueError("--compile_training does not yet support --lbfgs")
+
+
+def _is_native_omat_input(lmdb_backend, train_files) -> bool:
+    """Return whether every training path is a native OMat dataset root."""
+    return (
+        lmdb_backend == "omat_direct"
+        and bool(train_files)
+        and all(_is_omat_root(path) for path in train_files)
+    )
+
+
+def _should_load_ase_test_collections(lmdb_backend, train_files) -> bool:
+    """Return whether post-training ASE test collections should be materialized."""
+    if _is_native_omat_input(lmdb_backend, train_files):
+        return False
+    return all(check_path_ase_read(path) for path in train_files)
+
+
+def _split_input_paths(lmdb_backend, paths):
+    """Partition one head's inputs while keeping native roots unified."""
+    if _is_native_omat_input(lmdb_backend, paths):
+        return [], [paths]
+    return (
+        [path for path in paths if check_path_ase_read(path)],
+        [path for path in paths if not check_path_ase_read(path)],
+    )
 
 
 def _configure_model_for_training(args, *configure_args):
@@ -474,6 +501,10 @@ def run(args) -> None:
                 head_config.train_file[0], args, head_config, tag
             )
             head_config.collections = collections
+        elif _is_native_omat_input(args.lmdb_backend, head_config.train_file):
+            logging.info(
+                "Skipping ASE input probing for native OMat LMDB train_file"
+            )
         elif any(check_path_ase_read(f) for f in head_config.train_file):
             train_files_ase_list = [
                 f for f in head_config.train_file if check_path_ase_read(f)
@@ -521,7 +552,10 @@ def run(args) -> None:
             )
         head_configs.append(head_config)
 
-    if all(
+    if not any(
+        _is_native_omat_input(args.lmdb_backend, head_config.train_file)
+        for head_config in head_configs
+    ) and all(
         check_path_ase_read(head_config.train_file[0]) for head_config in head_configs
     ):
         size_collections_train = sum(
@@ -768,8 +802,9 @@ def run(args) -> None:
             else:
                 logging.warning("Pseudolabeling was not successful, continuing with original configurations")
 
-        ase_files = [f for f in head_config.train_file if check_path_ase_read(f)]
-        non_ase_files = [f for f in head_config.train_file if not check_path_ase_read(f)]
+        ase_files, non_ase_files = _split_input_paths(
+            args.lmdb_backend, head_config.train_file
+        )
 
         if ase_files:
             dataset = load_dataset_for_path(
@@ -806,8 +841,9 @@ def run(args) -> None:
         if head_config.valid_file:
             valid_datasets = []
 
-            valid_ase_files = [f for f in head_config.valid_file if check_path_ase_read(f)]
-            valid_non_ase_files = [f for f in head_config.valid_file if not check_path_ase_read(f)]
+            valid_ase_files, valid_non_ase_files = _split_input_paths(
+                args.lmdb_backend, head_config.valid_file
+            )
 
             if valid_ase_files:
                 valid_dataset = load_dataset_for_path(
@@ -1182,7 +1218,9 @@ def run(args) -> None:
     ) and head_configs[0].test_dir is not None:
         stop_first_test = True
     for head_config in head_configs:
-        if all(check_path_ase_read(f) for f in head_config.train_file):
+        if _should_load_ase_test_collections(
+            args.lmdb_backend, head_config.train_file
+        ):
             for name, subset in head_config.collections.tests:
                 test_sets[head_config.head_name + "_" + name] = [
                     data.AtomicData.from_config(
