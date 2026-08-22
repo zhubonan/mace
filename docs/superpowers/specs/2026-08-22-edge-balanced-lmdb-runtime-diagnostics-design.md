@@ -1,6 +1,6 @@
 # Edge-Balanced OMat LMDB Training and Runtime Diagnostics Design
 
-> **Status: approved architecture; written specification awaiting review.**
+> **Status: approved for implementation.**
 > The user approved exact cutoff-specific edge-count sidecars, fixed structures
 > per rank, and runtime diagnostics for loader waits and distributed efficiency.
 
