@@ -12,6 +12,13 @@ from .omat_lmdb_dataset import (
     decode_omat_row,
     write_omat_manifest,
 )
+from .omat_cost_profile import (
+    OMAT_COST_PROFILE_FORMAT,
+    OMAT_COST_PROFILE_MANIFEST,
+    OMatCostProfile,
+    OMatCostShard,
+    load_omat_cost_profile,
+)
 from .padding_tools import build_fake_padding_graph
 from .utils import (
     Configuration,
@@ -58,5 +65,10 @@ __all__ = [
     "build_omat_shard_index",
     "decode_omat_row",
     "write_omat_manifest",
+    "OMAT_COST_PROFILE_FORMAT",
+    "OMAT_COST_PROFILE_MANIFEST",
+    "OMatCostProfile",
+    "OMatCostShard",
+    "load_omat_cost_profile",
     "build_fake_padding_graph",
 ]

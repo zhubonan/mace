@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import os
 import zipfile
 import zlib
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -44,6 +45,9 @@ class OMatShardIndex:
     dataset_id: str
     shards: tuple[OMatShard, ...]
     cumulative_ends: tuple[int, ...]
+    manifest_path: Path | None = None
+    manifest_sha256: str | None = None
+    cost_profile: object | None = None
 
     def __len__(self) -> int:
         return self.cumulative_ends[-1] if self.cumulative_ends else 0
@@ -69,6 +73,25 @@ class OMatShardIndex:
                 f"{shard.length}: {shard.metadata_path}"
             )
         return np.asarray(raw_natoms, dtype=np.int64)
+
+    def with_cost_profile(
+        self, root: Path | str, *, cutoff: float
+    ) -> OMatShardIndex:
+        """Return an immutable index associated with a validated edge profile."""
+
+        from mace.data.omat_cost_profile import load_omat_cost_profile
+
+        return replace(
+            self,
+            cost_profile=load_omat_cost_profile(root, index=self, cutoff=cutoff),
+        )
+
+    def load_nedges(self, shard_index: int) -> np.ndarray:
+        """Load one aligned edge-cost array from the associated profile."""
+
+        if self.cost_profile is None:
+            raise ValueError("OMat shard index has no associated edge cost profile")
+        return self.cost_profile.load_nedges(shard_index)
 
 
 def _normalize_roots(
@@ -193,8 +216,8 @@ def _cumulative(shards: Sequence[OMatShard]) -> tuple[int, ...]:
 
 
 def _build_from_manifest(root: Path, manifest: Path) -> OMatShardIndex:
-    with manifest.open(encoding="utf-8") as stream:
-        payload = json.load(stream)
+    manifest_bytes = manifest.read_bytes()
+    payload = json.loads(manifest_bytes)
     if payload.get("format") != OMAT_MANIFEST_FORMAT:
         raise ValueError(f"Unsupported OMat manifest format in {manifest}")
     dataset_id = payload.get("dataset_id")
@@ -269,6 +292,8 @@ def _build_from_manifest(root: Path, manifest: Path) -> OMatShardIndex:
         dataset_id=dataset_id,
         shards=tuple(shards),
         cumulative_ends=_cumulative(shards),
+        manifest_path=manifest.resolve(),
+        manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
     )
 
 
