@@ -32,9 +32,7 @@ def _build_atom_edge_balanced_batches(
     nedges: np.ndarray,
     batch_size: int,
     rng: np.random.Generator,
-) -> tuple[
-    list[tuple[list[int], int, int]], np.ndarray, np.ndarray, np.ndarray
-]:
+) -> tuple[list[tuple[list[int], int, int]], np.ndarray, np.ndarray, np.ndarray]:
     """Preserve atom-balanced bins, then minimize their edge imbalance."""
 
     if len(indices) != len(natoms) or len(indices) != len(nedges):
@@ -124,7 +122,9 @@ class ShardWindowAtomEdgeBalancedBatchSampler(Sampler[list[int]]):
         if window_shards < 1:
             raise ValueError("window_shards must be positive")
         if index.cost_profile is None:
-            raise ValueError("Edge-balanced sampling requires an associated cost profile")
+            raise ValueError(
+                "Edge-balanced sampling requires an associated cost profile"
+            )
         if len(index.cost_profile.shards) != len(index.shards):
             raise ValueError("Edge cost profile shard count does not match dataset")
         for source_shard, cost_shard in zip(
@@ -134,7 +134,9 @@ class ShardWindowAtomEdgeBalancedBatchSampler(Sampler[list[int]]):
                 cost_shard.relative_shard_path != source_shard.relative_path
                 or cost_shard.rows != source_shard.length
             ):
-                raise ValueError("Edge cost profile shard mapping does not match dataset")
+                raise ValueError(
+                    "Edge cost profile shard mapping does not match dataset"
+                )
 
         full_batches = len(index) // batch_size
         usable_batches = full_batches - full_batches % num_replicas
@@ -189,9 +191,7 @@ class ShardWindowAtomEdgeBalancedBatchSampler(Sampler[list[int]]):
         records: list[_ShardPlanningRecord], window_shards: int
     ) -> list[list[_ShardPlanningRecord]]:
         group_count = (len(records) + window_shards - 1) // window_shards
-        groups: list[list[_ShardPlanningRecord]] = [
-            [] for _ in range(group_count)
-        ]
+        groups: list[list[_ShardPlanningRecord]] = [[] for _ in range(group_count)]
         if group_count <= 1:
             if records:
                 groups[0] = records
@@ -212,10 +212,7 @@ class ShardWindowAtomEdgeBalancedBatchSampler(Sampler[list[int]]):
         full_mask = (1 << len(records)) - 1
         for mask in range(1, full_mask):
             left_count = mask.bit_count()
-            if (
-                left_count > window_shards
-                or len(records) - left_count > window_shards
-            ):
+            if left_count > window_shards or len(records) - left_count > window_shards:
                 continue
             left_rows = sum(
                 record.rows

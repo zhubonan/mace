@@ -74,9 +74,7 @@ class OMatShardIndex:
             )
         return np.asarray(raw_natoms, dtype=np.int64)
 
-    def with_cost_profile(
-        self, root: Path | str, *, cutoff: float
-    ) -> OMatShardIndex:
+    def with_cost_profile(self, root: Path | str, *, cutoff: float) -> OMatShardIndex:
         """Return an immutable index associated with a validated edge profile."""
 
         from mace.data.omat_cost_profile import load_omat_cost_profile

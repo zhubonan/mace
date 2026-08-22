@@ -4,15 +4,6 @@ from .atomic_data import AtomicData
 from .hdf5_dataset import HDF5Dataset, dataset_from_sharded_hdf5
 from .lmdb_dataset import LMDBDataset
 from .neighborhood import get_neighborhood
-from .omat_lmdb_dataset import (
-    OMAT_MANIFEST_NAME,
-    OMatLMDBDataset,
-    OMatShard,
-    OMatShardIndex,
-    build_omat_shard_index,
-    decode_omat_row,
-    write_omat_manifest,
-)
 from .omat_cost_profile import (
     OMAT_COST_PROFILE_FORMAT,
     OMAT_COST_PROFILE_MANIFEST,
@@ -21,6 +12,15 @@ from .omat_cost_profile import (
     finalize_cost_profile,
     generate_cost_shard,
     load_omat_cost_profile,
+)
+from .omat_lmdb_dataset import (
+    OMAT_MANIFEST_NAME,
+    OMatLMDBDataset,
+    OMatShard,
+    OMatShardIndex,
+    build_omat_shard_index,
+    decode_omat_row,
+    write_omat_manifest,
 )
 from .padding_tools import build_fake_padding_graph
 from .utils import (

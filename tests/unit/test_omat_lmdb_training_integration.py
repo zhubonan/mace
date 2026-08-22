@@ -55,9 +55,7 @@ def test_split_input_paths_routes_native_roots_as_one_dataset(tmp_path):
         (family / "db_0.aselmdb").touch()
         roots.append(str(family))
 
-    ase_files, non_ase_files = run_train._split_input_paths(
-        "omat_direct", roots
-    )
+    ase_files, non_ase_files = run_train._split_input_paths("omat_direct", roots)
 
     assert ase_files == []
     assert non_ase_files == [roots]
@@ -134,9 +132,7 @@ def write_edge_profile(tmp_path, dataset):
             cutoff=dataset.r_max,
             shard_index=shard_index,
         )
-    data.finalize_cost_profile(
-        dataset.shard_index, profile_root, cutoff=dataset.r_max
-    )
+    data.finalize_cost_profile(dataset.shard_index, profile_root, cutoff=dataset.r_max)
     return profile_root
 
 

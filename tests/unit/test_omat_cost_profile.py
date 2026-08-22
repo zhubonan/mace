@@ -5,8 +5,8 @@
 
 import hashlib
 import json
-from pathlib import Path
 import zlib
+from pathlib import Path
 
 import lmdb
 import numpy as np
@@ -303,9 +303,7 @@ def test_generate_and_finalize_cost_profile_matches_online_graphs(tmp_path):
         dataset_root,
         [
             _official_structure([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
-            _official_structure(
-                [[0.0, 0.0, 0.0], [0.7, 0.0, 0.0], [3.0, 0.0, 0.0]]
-            ),
+            _official_structure([[0.0, 0.0, 0.0], [0.7, 0.0, 0.0], [3.0, 0.0, 0.0]]),
         ],
     )
     profile_root = tmp_path / "costs"

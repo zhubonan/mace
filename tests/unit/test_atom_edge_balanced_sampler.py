@@ -222,9 +222,7 @@ def test_edge_sampler_reduces_edge_tail_when_atoms_and_edges_are_decorrelated(
 
 def test_edge_sampler_preserves_atom_balance_with_variable_edge_density(tmp_path):
     source = np.random.default_rng(0)
-    natoms = np.resize(
-        np.asarray([2, 4, 8, 16, 32, 64, 96], dtype=np.int64), 256
-    )
+    natoms = np.resize(np.asarray([2, 4, 8, 16, 32, 64, 96], dtype=np.int64), 256)
     source.shuffle(natoms)
     edge_density = source.choice(
         np.asarray([12, 16, 24, 48, 72, 96], dtype=np.int64), size=len(natoms)
@@ -335,7 +333,9 @@ def test_edge_sampler_loads_atom_and_edge_arrays_in_bounded_windows(tmp_path):
     assert sorted(edge_calls) == list(range(9))
     assert sampler.peak_planning_shards <= min(2 * sampler.window_shards, 16)
     assert sampler.peak_window_shards <= sampler.window_shards
-    assert sampler.peak_window_rows <= 2 * sampler.window_shards + sampler.batch_size - 1
+    assert (
+        sampler.peak_window_rows <= 2 * sampler.window_shards + sampler.batch_size - 1
+    )
 
 
 def test_edge_sampler_contract_excludes_rank_but_tracks_epoch_and_profile(tmp_path):

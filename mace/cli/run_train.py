@@ -186,9 +186,7 @@ def _build_train_loader_and_sampler(
                 "Edge-balanced OMat sampling requires --lmdb_backend=omat_direct"
             )
         if cost_profile is None:
-            raise ValueError(
-                "Edge-balanced OMat sampling requires --lmdb_cost_profile"
-            )
+            raise ValueError("Edge-balanced OMat sampling requires --lmdb_cost_profile")
     if balanced_omat:
         if len(heads) != 1:
             raise ValueError(
@@ -202,9 +200,7 @@ def _build_train_loader_and_sampler(
             )
         native_dataset = train_sets[heads[0]]
         if isinstance(native_dataset, ConcatDataset):
-            raise ValueError(
-                "Balanced OMat sampling requires one native OMat dataset"
-            )
+            raise ValueError("Balanced OMat sampling requires one native OMat dataset")
         if not isinstance(native_dataset, data.OMatLMDBDataset):
             raise ValueError("Balanced OMat sampling requires an OMatLMDBDataset")
         if edge_balanced:
@@ -529,9 +525,7 @@ def run(args) -> None:
             )
             head_config.collections = collections
         elif _is_native_omat_input(args.lmdb_backend, head_config.train_file):
-            logging.info(
-                "Skipping ASE input probing for native OMat LMDB train_file"
-            )
+            logging.info("Skipping ASE input probing for native OMat LMDB train_file")
         elif any(check_path_ase_read(f) for f in head_config.train_file):
             train_files_ase_list = [
                 f for f in head_config.train_file if check_path_ase_read(f)

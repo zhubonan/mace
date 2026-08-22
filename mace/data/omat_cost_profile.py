@@ -134,29 +134,37 @@ def _validate_cost_array(raw_nedges: np.ndarray, shard: OMatCostShard) -> None:
         )
 
 
-def _validate_source_contract(payload: dict, index: OMatShardIndex, manifest: Path) -> None:
+def _validate_source_contract(
+    payload: dict, index: OMatShardIndex, manifest: Path
+) -> None:
     source = payload.get("source")
     if not isinstance(source, dict):
         raise ValueError(f"Invalid source dataset contract in {manifest}")
     if source.get("dataset_id") != index.dataset_id:
-        raise ValueError(f"Cost profile dataset identity does not match source: {manifest}")
+        raise ValueError(
+            f"Cost profile dataset identity does not match source: {manifest}"
+        )
     if source.get("manifest_sha256") != index.manifest_sha256:
         raise ValueError(f"Cost profile source manifest SHA-256 mismatch: {manifest}")
     source_shards = source.get("shards")
     if not isinstance(source_shards, list) or len(source_shards) != len(index.shards):
-        raise ValueError(f"Cost profile source shard ordering does not match: {manifest}")
+        raise ValueError(
+            f"Cost profile source shard ordering does not match: {manifest}"
+        )
     expected = [
         {"path": shard.relative_path.as_posix(), "rows": shard.length}
         for shard in index.shards
     ]
     if source_shards != expected:
-        if [entry.get("path") for entry in source_shards if isinstance(entry, dict)] != [
-            entry["path"] for entry in expected
-        ]:
+        if [
+            entry.get("path") for entry in source_shards if isinstance(entry, dict)
+        ] != [entry["path"] for entry in expected]:
             raise ValueError(
                 f"Cost profile source shard ordering does not match: {manifest}"
             )
-        raise ValueError(f"Cost profile source shard row count does not match: {manifest}")
+        raise ValueError(
+            f"Cost profile source shard row count does not match: {manifest}"
+        )
 
 
 def _validate_neighbour_contract(payload: dict, cutoff: float, manifest: Path) -> None:
@@ -164,11 +172,15 @@ def _validate_neighbour_contract(payload: dict, cutoff: float, manifest: Path) -
     if not isinstance(contract, dict):
         raise ValueError(f"Invalid neighbour contract in {manifest}")
     if contract.get("cutoff_hex") != float(cutoff).hex():
-        raise ValueError(f"Cost profile cutoff does not match training cutoff: {manifest}")
+        raise ValueError(
+            f"Cost profile cutoff does not match training cutoff: {manifest}"
+        )
     if contract.get("directed_edges") is not True:
         raise ValueError(f"Cost profile must use directed-edge semantics: {manifest}")
     if contract.get("true_self_interaction") is not False:
-        raise ValueError(f"Cost profile self-interaction semantics do not match: {manifest}")
+        raise ValueError(
+            f"Cost profile self-interaction semantics do not match: {manifest}"
+        )
     if contract.get("pbc_cell_semantics") != OMAT_PBC_CELL_SEMANTICS:
         raise ValueError(f"Cost profile PBC/cell semantics do not match: {manifest}")
     if contract.get("neighbour_list_implementation") != OMAT_NEIGHBOUR_IMPLEMENTATION:
@@ -233,7 +245,9 @@ def load_omat_cost_profile(
         path_value = entry.get("cost_path")
         if rows == 0:
             if path_value is not None or total_atoms != 0 or total_edges != 0:
-                raise ValueError(f"Empty cost-profile shard must have zero costs: {manifest}")
+                raise ValueError(
+                    f"Empty cost-profile shard must have zero costs: {manifest}"
+                )
             cost_path = None
         else:
             if not isinstance(path_value, str):
@@ -268,13 +282,19 @@ def load_omat_cost_profile(
         payload.get("total_edges"), field="total_edges", manifest=manifest
     )
     if declared_rows != sum(shard.rows for shard in shards):
-        raise ValueError(f"Cost profile total_rows does not match shard sum: {manifest}")
+        raise ValueError(
+            f"Cost profile total_rows does not match shard sum: {manifest}"
+        )
     if declared_shards != len(shards):
         raise ValueError(f"Cost profile total_shards does not match: {manifest}")
     if declared_atoms != sum(shard.total_atoms for shard in shards):
-        raise ValueError(f"Cost profile total_atoms does not match shard sum: {manifest}")
+        raise ValueError(
+            f"Cost profile total_atoms does not match shard sum: {manifest}"
+        )
     if declared_edges != sum(shard.total_edges for shard in shards):
-        raise ValueError(f"Cost profile total_edges does not match shard sum: {manifest}")
+        raise ValueError(
+            f"Cost profile total_edges does not match shard sum: {manifest}"
+        )
 
     return OMatCostProfile(
         root=profile_root,
@@ -339,10 +359,7 @@ def _load_cost_shard_result(
                 raise ValueError(f"Directed-edge semantics mismatch in {path}")
             if bool(_scalar(payload, "true_self_interaction", path)) is not False:
                 raise ValueError(f"Self-interaction semantics mismatch in {path}")
-            if (
-                _scalar(payload, "pbc_cell_semantics", path)
-                != OMAT_PBC_CELL_SEMANTICS
-            ):
+            if _scalar(payload, "pbc_cell_semantics", path) != OMAT_PBC_CELL_SEMANTICS:
                 raise ValueError(f"PBC/cell semantics mismatch in {path}")
             if (
                 _scalar(payload, "neighbour_list_implementation", path)
@@ -376,9 +393,7 @@ def _load_cost_shard_result(
 
 def _atomic_npz(path: Path, **arrays) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(
-        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("wb") as stream:
             np.savez(stream, **arrays)
@@ -522,9 +537,7 @@ def _package_version(name: str) -> str:
 
 def _atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(
-        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8") as stream:
             json.dump(payload, stream, indent=2, sort_keys=True)
