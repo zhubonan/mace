@@ -567,6 +567,9 @@ def train_one_epoch(
                     with training_diagnostics.range("dataloader.next"):
                         batch = next(batch_iterator)
                 except StopIteration:
+                    abort_step = getattr(training_diagnostics, "abort_step", None)
+                    if callable(abort_step):
+                        abort_step()
                     break
                 loader_wait_s = training_diagnostics.clock() - wait_start
                 _, opt_metrics, step_timings = take_step_with_diagnostics(

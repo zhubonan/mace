@@ -414,3 +414,206 @@ def test_measured_step_preserves_optimizer_behavior_and_phase_boundaries():
         "gradient_clipping",
         "optimizer",
     ]
+
+
+def deep_config(tmp_path, *, start=1, steps=2, backend="nvtx"):
+    return TrainingDiagnosticsConfig(
+        mode="deep",
+        interval=100,
+        directory=tmp_path,
+        start_step=start,
+        steps=steps,
+        backend=backend,
+    )
+
+
+def patch_cuda_memory(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda _device: 0)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda _device: 0)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda _device: 0)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda _device: 0)
+
+
+def record_synthetic_step(diagnostics):
+    diagnostics.record_step(
+        epoch=0,
+        loader_wait_s=0.001,
+        step_period_s=0.01,
+        h2d_wall_s=0.001,
+        train_wall_s=0.008,
+        batch=fake_batch(),
+        optimizer_enabled=True,
+        ema_enabled=False,
+        compile_requested=False,
+        compiled_active=False,
+        compiler_graph_count=None,
+    )
+
+
+def test_deep_configuration_requires_cuda_and_a_finite_positive_window(tmp_path):
+    with pytest.raises(ValueError, match="positive --training_diagnostics_steps"):
+        TrainingDiagnostics(
+            deep_config(tmp_path, steps=0),
+            rank=0,
+            world_size=1,
+            device=torch.device("cuda"),
+            distributed=False,
+        )
+    with pytest.raises(ValueError, match="requires a CUDA device"):
+        TrainingDiagnostics(
+            deep_config(tmp_path, steps=2),
+            rank=0,
+            world_size=1,
+            device=torch.device("cpu"),
+            distributed=False,
+        )
+
+
+def test_nvtx_ranges_are_bounded_to_declared_optimizer_steps(tmp_path, monkeypatch):
+    patch_cuda_memory(monkeypatch)
+    pushes = []
+    pops = []
+    monkeypatch.setattr(torch.cuda.nvtx, "range_push", pushes.append)
+    monkeypatch.setattr(torch.cuda.nvtx, "range_pop", lambda: pops.append(True))
+    diagnostics = TrainingDiagnostics(
+        deep_config(tmp_path, start=1, steps=2, backend="nvtx"),
+        rank=0,
+        world_size=1,
+        device=torch.device("cuda"),
+        distributed=False,
+    )
+
+    labels = [
+        "dataloader.next",
+        "host_to_device",
+        "forward_loss",
+        "backward_ddp",
+        "gradient_clipping",
+        "optimizer",
+        "ema",
+    ]
+    for _ in range(4):
+        diagnostics.prepare_step()
+        for label in labels:
+            with diagnostics.range(label):
+                pass
+        record_synthetic_step(diagnostics)
+    diagnostics.close()
+
+    assert pushes == labels * 2
+    assert len(pops) == len(pushes)
+
+
+class FakeProfiler:
+    def __init__(self):
+        self.entered = 0
+        self.exited = 0
+        self.steps = 0
+        self.exported = []
+        self.collection_toggles = []
+
+    def __enter__(self):
+        self.entered += 1
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.exited += 1
+
+    def step(self):
+        self.steps += 1
+
+    def export_chrome_trace(self, path):
+        self.exported.append(Path(path))
+        Path(path).write_text("{}", encoding="utf-8")
+
+    def toggle_collection_dynamic(self, enabled, activities):
+        self.collection_toggles.append((enabled, tuple(activities)))
+
+
+def test_torch_profiler_exports_one_bounded_chrome_trace_per_rank(
+    tmp_path, monkeypatch
+):
+    patch_cuda_memory(monkeypatch)
+    profiler = FakeProfiler()
+    factories = []
+
+    def profile_factory(**kwargs):
+        factories.append(kwargs)
+        return profiler
+
+    labels = []
+    monkeypatch.setattr(torch.profiler, "profile", profile_factory)
+    monkeypatch.setattr(
+        torch.profiler,
+        "record_function",
+        lambda label: (labels.append(label), nullcontext())[1],
+    )
+    diagnostics = TrainingDiagnostics(
+        deep_config(tmp_path, start=0, steps=2, backend="torch_profiler"),
+        rank=3,
+        world_size=4,
+        device=torch.device("cuda"),
+        distributed=False,
+    )
+
+    for _ in range(3):
+        diagnostics.prepare_step()
+        with diagnostics.range("forward_loss"):
+            pass
+        record_synthetic_step(diagnostics)
+    diagnostics.close()
+
+    assert len(factories) == 1
+    assert set(factories[0]["activities"]) == {
+        torch.profiler.ProfilerActivity.CPU,
+        torch.profiler.ProfilerActivity.CUDA,
+    }
+    assert profiler.entered == profiler.exited == 1
+    assert profiler.steps == 2
+    assert labels == ["forward_loss", "forward_loss"]
+    assert profiler.exported == [tmp_path / "rank-00003-step-00000000-00000001.json"]
+    assert profiler.exported[0].is_file()
+
+
+def test_torch_profiler_pauses_across_loader_exhaustion_without_splitting_trace(
+    tmp_path, monkeypatch
+):
+    patch_cuda_memory(monkeypatch)
+    profiler = FakeProfiler()
+    factories = []
+
+    def profile_factory(**kwargs):
+        factories.append(kwargs)
+        return profiler
+
+    monkeypatch.setattr(torch.profiler, "profile", profile_factory)
+    monkeypatch.setattr(torch.profiler, "record_function", lambda _label: nullcontext())
+    diagnostics = TrainingDiagnostics(
+        deep_config(tmp_path, start=1, steps=2, backend="torch_profiler"),
+        rank=0,
+        world_size=1,
+        device=torch.device("cuda"),
+        distributed=False,
+    )
+
+    diagnostics.prepare_step()
+    record_synthetic_step(diagnostics)
+    diagnostics.prepare_step()
+    record_synthetic_step(diagnostics)
+
+    diagnostics.prepare_step()
+    diagnostics.abort_step()
+
+    diagnostics.prepare_step()
+    record_synthetic_step(diagnostics)
+    diagnostics.close()
+
+    activities = (
+        torch.profiler.ProfilerActivity.CPU,
+        torch.profiler.ProfilerActivity.CUDA,
+    )
+    assert len(factories) == 1
+    assert profiler.entered == profiler.exited == 1
+    assert profiler.collection_toggles == [(False, activities), (True, activities)]
+    assert profiler.steps == 2
+    assert profiler.exported == [tmp_path / "rank-00000-step-00000001-00000002.json"]

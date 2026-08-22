@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -34,7 +34,9 @@ class TrainingDiagnosticsConfig:
         if self.steps < 0:
             raise ValueError("training diagnostics steps must be non-negative")
         if self.backend not in {"nvtx", "torch_profiler"}:
-            raise ValueError("training diagnostics backend must be nvtx or torch_profiler")
+            raise ValueError(
+                "training diagnostics backend must be nvtx or torch_profiler"
+            )
         object.__setattr__(self, "directory", Path(self.directory).resolve())
 
 
@@ -94,6 +96,12 @@ class TrainingDiagnostics:
             raise ValueError("diagnostic world_size must be positive")
         if rank < 0 or rank >= world_size:
             raise ValueError("diagnostic rank must be in [0, world_size)")
+        if config.mode == "deep" and config.steps < 1:
+            raise ValueError(
+                "Deep diagnostics require positive --training_diagnostics_steps"
+            )
+        if config.mode == "deep" and device.type != "cuda":
+            raise ValueError("Deep training diagnostics requires a CUDA device")
         self.config = config
         self.rank = int(rank)
         self.world_size = int(world_size)
@@ -104,6 +112,11 @@ class TrainingDiagnostics:
         self._closed = False
         self._rank_buffer: list[dict] = []
         self._aggregate_stream = None
+        self._capture_active = False
+        self._prepared_step: int | None = None
+        self._profiler = None
+        self._profiler_collection_enabled = False
+        self._captured_steps = 0
 
         config.directory.mkdir(parents=True, exist_ok=True)
         rank_path = config.directory / f"rank-{self.rank:05d}.jsonl"
@@ -129,10 +142,101 @@ class TrainingDiagnostics:
     def prepare_step(self) -> None:
         """Prepare optional deep-capture state before DataLoader.next()."""
 
-    def range(self, _name: str):
-        """Summary mode deliberately creates no profiler or attribution ranges."""
+        if self.config.mode != "deep":
+            return
+        if self._prepared_step is not None:
+            raise RuntimeError("A diagnostic step is already prepared")
+        step = self.optimizer_step
+        self._prepared_step = step
+        capture_end = self.config.start_step + self.config.steps
+        self._capture_active = self.config.start_step <= step < capture_end
+        if self._capture_active and self.config.backend == "torch_profiler":
+            if self._profiler is None:
+                self._profiler = torch.profiler.profile(
+                    activities=self._profiler_activities(),
+                    record_shapes=True,
+                    profile_memory=True,
+                )
+                self._profiler.__enter__()
+                self._profiler_collection_enabled = True
+            elif not self._profiler_collection_enabled:
+                self._toggle_profiler_collection(True)
 
-        return nullcontext()
+    def abort_step(self) -> None:
+        """Cancel a prepared capture when DataLoader.next() reaches exhaustion."""
+
+        if self.config.mode != "deep" or self._prepared_step is None:
+            return
+        if self._capture_active and self._profiler is not None:
+            self._toggle_profiler_collection(False)
+        self._capture_active = False
+        self._prepared_step = None
+
+    @staticmethod
+    def _profiler_activities():
+        return [
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ]
+
+    def _toggle_profiler_collection(self, enabled: bool) -> None:
+        toggle = getattr(self._profiler, "toggle_collection_dynamic", None)
+        if not callable(toggle):
+            raise RuntimeError(
+                "This PyTorch profiler cannot pause across DataLoader exhaustion; "
+                "upgrade PyTorch or select a capture window within one epoch"
+            )
+        toggle(enabled, self._profiler_activities())
+        self._profiler_collection_enabled = enabled
+
+    @contextmanager
+    def range(self, name: str):
+        """Emit attribution only inside the requested finite deep window."""
+
+        if not self._capture_active:
+            with nullcontext():
+                yield
+            return
+        if self.config.backend == "nvtx":
+            torch.cuda.nvtx.range_push(name)
+            try:
+                yield
+            finally:
+                torch.cuda.nvtx.range_pop()
+            return
+        with torch.profiler.record_function(name):
+            yield
+
+    def _trace_path(self, end_step: int) -> Path:
+        return self.config.directory / (
+            f"rank-{self.rank:05d}-step-{self.config.start_step:08d}-"
+            f"{end_step:08d}.json"
+        )
+
+    def _stop_profiler(self, *, export: bool) -> None:
+        profiler = self._profiler
+        if profiler is None:
+            return
+        profiler.__exit__(None, None, None)
+        if export:
+            end_step = self.config.start_step + self._captured_steps - 1
+            profiler.export_chrome_trace(str(self._trace_path(end_step)))
+        self._profiler = None
+        self._profiler_collection_enabled = False
+
+    def _finish_deep_step(self, step: int) -> None:
+        if self.config.mode != "deep":
+            return
+        if self._prepared_step != step:
+            raise RuntimeError("Diagnostic step was recorded without prepare_step")
+        if self._capture_active:
+            self._captured_steps += 1
+            if self._profiler is not None:
+                self._profiler.step()
+            if self._captured_steps == self.config.steps:
+                self._stop_profiler(export=True)
+                self._capture_active = False
+        self._prepared_step = None
 
     def _cuda_memory(self) -> tuple[int, int, int, int]:
         if self.device.type != "cuda":
@@ -178,13 +282,13 @@ class TrainingDiagnostics:
             "critical_path_loader_wait_fraction": (
                 0.0 if max_period == 0.0 else max_wait / max_period
             ),
-            "input_wait_dominated": bool(max_period > 0 and max_wait >= 0.5 * max_period),
+            "input_wait_dominated": bool(
+                max_period > 0 and max_wait >= 0.5 * max_period
+            ),
         }
         if self.rank == 0:
             if self._aggregate_stream is None:
-                aggregate_path = (
-                    self.config.directory / "rank-00000-aggregate.jsonl"
-                )
+                aggregate_path = self.config.directory / "rank-00000-aggregate.jsonl"
                 self._aggregate_stream = aggregate_path.open("a", encoding="utf-8")
                 self._write_line(self._aggregate_stream, self._schema_record())
             self._write_line(self._aggregate_stream, record)
@@ -257,6 +361,7 @@ class TrainingDiagnostics:
             )
             self._aggregate(local_values, epoch=epoch, step=step)
             self._flush_rank()
+        self._finish_deep_step(step)
 
     def _flush_rank(self) -> None:
         for record in self._rank_buffer:
@@ -267,6 +372,8 @@ class TrainingDiagnostics:
     def close(self) -> None:
         if self._closed:
             return
+        if self._profiler is not None:
+            self._stop_profiler(export=self._captured_steps > 0)
         self._flush_rank()
         self._rank_stream.close()
         if self._aggregate_stream is not None:
