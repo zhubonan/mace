@@ -10,6 +10,7 @@ import orjson
 import pytest
 import torch
 
+import mace.data.omat_lmdb_dataset as omat_lmdb_module
 from mace import data, tools
 from mace.data.omat_lmdb_dataset import (
     OMAT_MANIFEST_FORMAT,
@@ -215,6 +216,25 @@ def test_manifest_round_trip_preserves_dataset_identity_and_counts(tmp_path):
     assert len(loaded) == 2
 
 
+def test_manifest_startup_validates_metadata_header_without_loading_values(
+    tmp_path, monkeypatch
+):
+    write_metadata_shard(tmp_path / "family", "0", [4, 8])
+    discovered = build_omat_shard_index(tmp_path)
+    manifest = write_omat_manifest(tmp_path, discovered, dataset_id="OMat24")
+
+    def fail_if_loaded(_metadata_path):
+        raise AssertionError("manifest startup loaded the complete natoms array")
+
+    monkeypatch.setattr(
+        omat_lmdb_module, "_load_validated_natoms", fail_if_loaded
+    )
+
+    loaded = build_omat_shard_index(tmp_path, manifest=manifest)
+
+    assert len(loaded) == 2
+
+
 @pytest.mark.parametrize("unsafe_path", ["/tmp/db.aselmdb", "../db.aselmdb"])
 def test_manifest_rejects_unsafe_shard_paths(tmp_path, unsafe_path):
     manifest = tmp_path / OMAT_MANIFEST_NAME
@@ -317,6 +337,70 @@ def test_manifest_rejects_nonempty_lmdb_declared_empty_without_metadata(tmp_path
 
     with pytest.raises(ValueError, match="Missing metadata for non-empty shard"):
         build_omat_shard_index(tmp_path, manifest=manifest)
+
+
+def test_manifest_rejects_nonempty_lmdb_with_empty_metadata(tmp_path):
+    write_lmdb_without_metadata(tmp_path / "family", "0", nonempty=True)
+    np.savez(
+        tmp_path / "family" / "metadata_db_0.npz",
+        natoms=np.empty(0, dtype=np.int64),
+    )
+    manifest = tmp_path / OMAT_MANIFEST_NAME
+    manifest.write_text(
+        json.dumps(
+            {
+                "format": OMAT_MANIFEST_FORMAT,
+                "dataset_id": "OMat24",
+                "total_rows": 0,
+                "shards": [
+                    {
+                        "family": "family",
+                        "path": "family/db_0.aselmdb",
+                        "metadata": "family/metadata_db_0.npz",
+                        "rows": 0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="non-empty LMDB shard"):
+        build_omat_shard_index(tmp_path, manifest=manifest)
+
+
+def test_manifest_accepts_logically_empty_lmdb_with_administrative_keys(tmp_path):
+    family = tmp_path / "family"
+    family.mkdir()
+    shard = family / "db_0.aselmdb"
+    environment = lmdb.open(str(shard), subdir=False, map_size=1 << 20)
+    with environment.begin(write=True) as transaction:
+        transaction.put(b"nextid", b"1")
+        transaction.put(b"metadata", b"{}")
+    environment.close()
+    manifest = tmp_path / OMAT_MANIFEST_NAME
+    manifest.write_text(
+        json.dumps(
+            {
+                "format": OMAT_MANIFEST_FORMAT,
+                "dataset_id": "OMat24",
+                "total_rows": 0,
+                "shards": [
+                    {
+                        "family": "family",
+                        "path": "family/db_0.aselmdb",
+                        "metadata": None,
+                        "rows": 0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    index = build_omat_shard_index(tmp_path, manifest=manifest)
+
+    assert len(index) == 0
 
 
 def test_missing_metadata_is_allowed_only_for_an_empty_lmdb(tmp_path):

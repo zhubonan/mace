@@ -28,12 +28,14 @@ are qualified below.
 `OMatLMDBDataset` builds a compact immutable index from the checked-in
 manifest, maps a global row to a shard in logarithmic time, and opens LMDB
 environments lazily through a process-local bounded LRU. Manifest startup
-fails closed on stale row counts, invalid `natoms`, or a nominally empty shard
-that has LMDB entries. Validating all 5,300 metadata files and 100,824,585 rows
-took 21.85 seconds on the qualification host. Official zlib/orjson rows are
-decoded directly into a MACE `Configuration`. Each worker owns its own
-transactions and environments; fork, spawn, and pickle reset inherited
-ownership.
+fails closed on stale row counts, invalid `natoms` shape/type metadata, or a
+nominally empty shard that contains numeric LMDB rows. It reads only NumPy
+headers at startup; full positive-value validation remains lazy when each
+shard's `natoms` is loaded. Indexing all 5,300 metadata files and 100,824,585
+rows took 0.89 seconds on the qualification host, down from 21.85 seconds when
+every array was decompressed eagerly. Official zlib/orjson rows are decoded
+directly into a MACE `Configuration`. Each worker owns its own transactions
+and environments; fork, spawn, and pickle reset inherited ownership.
 
 `ShardWindowAtomBalancedBatchSampler` shuffles shards deterministically for
 each epoch, loads `natoms` for eight shards at a time, sorts rows by atom
@@ -159,13 +161,19 @@ temporary memmaps, runtime environments, and bulky traces are not retained.
 
 ## Local RTX 5090 compiled-training matrix
 
-The final local matrix used source `c7b34672efbb36594556aac5981f6facb4ab0d40`,
-PyTorch 2.11.0+cu128, e3nn 0.4.4, IEEE FP32 (both CUDA matmul and cuDNN TF32
-disabled), one RTX 5090, batch 128, four warmups, and 256 timed full
-energy/force/stress optimizer steps. It ran three order-balanced repetitions
-at 8 and 16 workers. The HDF5 and native-random cases used the same 1,000
-official rows and agreed exactly on the complete batch-shape trajectory and
-first scalar loss. This does not claim tensor-exact equality of every input.
+The final local matrix used base source
+`c7b34672efbb36594556aac5981f6facb4ab0d40` plus an uncommitted benchmark
+harness with SHA256
+`f8d3185ff280d1a5cda0f741305f025beba3fb6b805e4b71bccda054d7c1a4c9`.
+The exact harness source remains a pre-existing dirty worktree file and is not
+recoverable from the base revision alone. The run used PyTorch 2.11.0+cu128,
+e3nn 0.4.4, IEEE FP32 (both CUDA matmul and cuDNN TF32 disabled), one RTX
+5090, batch 128, four warmups, and 256 timed full energy/force/stress optimizer
+steps. It ran three order-balanced repetitions at 8 and 16 workers. The HDF5
+and native-random cases selected the same nominal 1,000-row corpus and agreed
+exactly on the complete batch-shape trajectory and first scalar loss. The run
+records do not contain immutable input hashes, so this does not establish
+cryptographic row identity or tensor-exact equality of every input.
 
 | Input/sampling | Workers | Median structures/s | Active SM | Active power | Power limit |
 |---|---:|---:|---:|---:|---:|
@@ -185,9 +193,8 @@ post-warmup counter growth or fallback.
 The power result must be interpreted with SM activity: low board power in the
 HDF5 case accompanies only 44.9-52.4% active SM and lower throughput. Native
 input removes much of that starvation. Balanced input can finish faster with
-lower sampled board power because this pilot has constant 12-atom structures
-and its ordering changes the instantaneous edge workload; power draw alone is
-not an occupancy metric.
+lower sampled board power because its ordering changes both instantaneous atom
+count and edge workload; power draw alone is not an occupancy metric.
 
 Compact summary:
 
@@ -195,7 +202,7 @@ Compact summary:
 .profiling/mace-hdf5-gpu-2026-08-13/phase44/gpu-matrix-summary.json
 ```
 
-It is the direct verifier output from:
+It is the direct verifier output from the locally retained raw matrix:
 
 ```bash
 <runtime> .profiling/mace-hdf5-gpu-2026-08-13/phase44/scripts/verify_phase44.py \
@@ -205,8 +212,9 @@ It is the direct verifier output from:
   --output .profiling/mace-hdf5-gpu-2026-08-13/phase44/gpu-matrix-summary.json
 ```
 
-The raw matrix is intentionally untracked because it contains 18 rank JSONs,
-logs, and telemetry streams.
+The raw matrix contains 18 rank JSONs, logs, and telemetry streams but remains
+untracked. Therefore the compact summary can be regenerated in this worktree,
+but not independently from committed artifacts alone.
 
 ## Strict compiled-DDP and model compatibility gates
 

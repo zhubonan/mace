@@ -236,6 +236,14 @@ def training_record(*, policy, workers, repetition, rate=1000.0):
         "mode": "compiled",
         "backend": "hybrid",
         "derivative_mode": "positions",
+        "dataset": "/data/pilot.h5",
+        "lmdb_root": "/data/omat-lmdb",
+        "record_limit": 1000,
+        "model_preset": "production",
+        "production_ablation": "none",
+        "r_max": 6.0,
+        "lmdb_shard_window": 8,
+        "lmdb_max_open_shards": 8,
         "precision_policy": {
             "requested": "highest",
             "effective": "highest",
@@ -338,6 +346,43 @@ def test_training_run_verifier_fails_on_graph_growth(tmp_path):
         )
 
 
+def test_training_run_verifier_rejects_missing_graph_counters(tmp_path):
+    path = write_training_run(tmp_path, "native_balanced", 8, 0)
+    import json
+
+    record_path = path / "rank-0.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    del record["dynamo_counters_after_warmup"]
+    del record["dynamo_counters_final"]
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Dynamo graph counters are missing"):
+        verify_training_run(
+            path,
+            expected_world_size=1,
+            expected_source_revision="abc123",
+        )
+
+
+def test_training_run_verifier_rejects_stable_multiple_graphs(tmp_path):
+    path = write_training_run(tmp_path, "native_balanced", 8, 0)
+    import json
+
+    record_path = path / "rank-0.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    counters = {"stats": {"unique_graphs": 2}}
+    record["dynamo_counters_after_warmup"] = counters
+    record["dynamo_counters_final"] = counters
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly one Dynamo graph"):
+        verify_training_run(
+            path,
+            expected_world_size=1,
+            expected_source_revision="abc123",
+        )
+
+
 def test_training_run_verifier_rejects_cudnn_tf32(tmp_path):
     path = write_training_run(tmp_path, "native_balanced", 8, 0)
     import json
@@ -348,6 +393,55 @@ def test_training_run_verifier_rejects_cudnn_tf32(tmp_path):
     record_path.write_text(json.dumps(record), encoding="utf-8")
 
     with pytest.raises(ValueError, match="cuDNN TF32"):
+        verify_training_run(
+            path,
+            expected_world_size=1,
+            expected_source_revision="abc123",
+        )
+
+
+def test_training_run_verifier_rejects_lower_effective_matmul_precision(tmp_path):
+    path = write_training_run(tmp_path, "native_balanced", 8, 0)
+    import json
+
+    record_path = path / "rank-0.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["precision_policy"]["effective"] = "high"
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="effective precision is not IEEE FP32"):
+        verify_training_run(
+            path,
+            expected_world_size=1,
+            expected_source_revision="abc123",
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value,match",
+    [
+        ("dataset", "", "dataset path"),
+        ("lmdb_root", "", "LMDB root"),
+        ("record_limit", 999, "record limit"),
+        ("model_preset", "small", "model preset"),
+        ("production_ablation", "radial", "production ablation"),
+        ("r_max", 5.0, "cutoff"),
+        ("lmdb_shard_window", 4, "shard window"),
+        ("lmdb_max_open_shards", 4, "open shard limit"),
+    ],
+)
+def test_training_run_verifier_rejects_wrong_qualification_metadata(
+    tmp_path, field, value, match
+):
+    path = write_training_run(tmp_path, "native_balanced", 8, 0)
+    import json
+
+    record_path = path / "rank-0.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record[field] = value
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=match):
         verify_training_run(
             path,
             expected_world_size=1,
@@ -376,13 +470,22 @@ def test_gpu_matrix_verifier_accepts_complete_balanced_repetitions(tmp_path):
     )
 
     assert summary["runs"] == 18
-    assert summary["source_revision"] == "abc123"
+    assert summary["base_source_revision"] == "abc123"
+    assert "source_revision" not in summary
     assert summary["world_size"] == 1
     assert summary["repetitions"] == 3
     assert summary["batch_size_per_rank"] == 128
     assert summary["warmup_steps"] == 4
     assert summary["timed_steps"] == 256
     assert summary["matmul_precision"] == "highest"
+    assert summary["dataset"] == "/data/pilot.h5"
+    assert summary["lmdb_root"] == "/data/omat-lmdb"
+    assert summary["record_limit"] == 1000
+    assert summary["model_preset"] == "production"
+    assert summary["production_ablation"] == "none"
+    assert summary["r_max"] == 6.0
+    assert summary["lmdb_shard_window"] == 8
+    assert summary["lmdb_max_open_shards"] == 8
     assert summary["acceptance"] == {
         "balanced_within_two_percent": True,
         "compiled_without_fallback": True,

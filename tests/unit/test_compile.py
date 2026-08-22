@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from e3nn import o3
 from torch.testing import assert_close
 
+import mace.modules.utils as module_utils
 from mace import data, modules, tools
 from mace.modules.wrapper_ops import CuEquivarianceConfig
 from mace.tools import compile as mace_compile
@@ -20,6 +21,12 @@ from mace.tools import torch_geometric
 table = tools.AtomicNumberTable([6])
 atomic_energies = np.array([1.0], dtype=float)
 cutoff = 5.0
+
+
+def test_compile_guard_supports_legacy_torch_without_compiler(monkeypatch):
+    monkeypatch.delattr(torch, "compiler")
+
+    assert module_utils._is_compiling() is False
 
 
 def test_compile_module_does_not_require_compiler_training_dependencies():

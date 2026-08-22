@@ -114,8 +114,32 @@ def verify_training_run(
         _require(record.get("mode") == "compiled", "run did not use compilation")
         _require(record.get("backend") == "hybrid", "run did not use hybrid backend")
         _require(record.get("derivative_mode") == "positions", "wrong derivative mode")
+        _require(
+            isinstance(record.get("dataset"), str) and bool(record["dataset"]),
+            "missing dataset path",
+        )
+        _require(
+            isinstance(record.get("lmdb_root"), str) and bool(record["lmdb_root"]),
+            "missing LMDB root",
+        )
+        _require(record.get("record_limit") == 1000, "record limit mismatch")
+        _require(record.get("model_preset") == "production", "model preset mismatch")
+        _require(
+            record.get("production_ablation") == "none",
+            "production ablation mismatch",
+        )
+        _require(record.get("r_max") == 6.0, "cutoff mismatch")
+        _require(record.get("lmdb_shard_window") == 8, "shard window mismatch")
+        _require(
+            record.get("lmdb_max_open_shards") == 8,
+            "open shard limit mismatch",
+        )
         precision = record.get("precision_policy", {})
         _require(precision.get("requested") == "highest", "precision is not IEEE FP32")
+        _require(
+            precision.get("effective") == "highest",
+            "effective precision is not IEEE FP32",
+        )
         _require(
             precision.get("cuda_matmul_allow_tf32") is False,
             "TF32 was enabled",
@@ -147,10 +171,20 @@ def verify_training_run(
         )
         _require(record.get("is_compiled") is True, "compiled facade fell back")
         _require(record.get("compilation_error") is None, "compilation error recorded")
+        counters_after_warmup = record.get("dynamo_counters_after_warmup")
+        counters_final = record.get("dynamo_counters_final")
         _require(
-            record.get("dynamo_counters_after_warmup")
-            == record.get("dynamo_counters_final"),
+            isinstance(counters_after_warmup, dict)
+            and isinstance(counters_final, dict),
+            "Dynamo graph counters are missing",
+        )
+        _require(
+            counters_after_warmup == counters_final,
             "Dynamo graph counters grew after warmup",
+        )
+        _require(
+            counters_final.get("stats", {}).get("unique_graphs") == 1,
+            "run did not retain exactly one Dynamo graph",
         )
         _require(
             record.get("source_revision") == expected_source_revision,
@@ -191,6 +225,14 @@ def verify_training_run(
         "parameter_checksum": first["parameter_checksum"],
         "benchmark_sha256": first["benchmark_sha256"],
         "adapter_sha256": first["adapter_sha256"],
+        "dataset": first["dataset"],
+        "lmdb_root": first["lmdb_root"],
+        "record_limit": first["record_limit"],
+        "model_preset": first["model_preset"],
+        "production_ablation": first["production_ablation"],
+        "r_max": first["r_max"],
+        "lmdb_shard_window": first["lmdb_shard_window"],
+        "lmdb_max_open_shards": first["lmdb_max_open_shards"],
         "gpu_telemetry": telemetry,
     }
 
@@ -220,6 +262,20 @@ def verify_gpu_matrix(
     adapter_hashes = {run["adapter_sha256"] for run in runs}
     _require(len(benchmark_hashes) == 1, "matrix benchmark hashes disagree")
     _require(len(adapter_hashes) == 1, "matrix adapter hashes disagree")
+    qualification = {}
+    for field in (
+        "dataset",
+        "lmdb_root",
+        "record_limit",
+        "model_preset",
+        "production_ablation",
+        "r_max",
+        "lmdb_shard_window",
+        "lmdb_max_open_shards",
+    ):
+        values = {run[field] for run in runs}
+        _require(len(values) == 1, f"matrix {field} values disagree")
+        qualification[field] = next(iter(values))
     medians = {}
     telemetry_medians = {}
     balanced_ok = True
@@ -276,13 +332,14 @@ def verify_gpu_matrix(
     return {
         "root": str(root),
         "runs": len(runs),
-        "source_revision": expected_source_revision,
+        "base_source_revision": expected_source_revision,
         "world_size": expected_world_size,
         "repetitions": expected_repetitions,
         "batch_size_per_rank": 128,
         "warmup_steps": 4,
         "timed_steps": 256,
         "matmul_precision": "highest",
+        **qualification,
         "medians": medians,
         "telemetry_medians": telemetry_medians,
         "benchmark_sha256": next(iter(benchmark_hashes)),

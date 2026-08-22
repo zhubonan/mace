@@ -726,6 +726,12 @@ class GraphContext(NamedTuple):
     interaction_kwargs: InteractionKwargs
 
 
+def _is_compiling() -> bool:
+    compiler = getattr(torch, "compiler", None)
+    is_compiling = getattr(compiler, "is_compiling", None)
+    return bool(is_compiling()) if callable(is_compiling) else False
+
+
 def prepare_graph(
     data: Dict[str, torch.Tensor],
     compute_virials: bool = False,
@@ -761,7 +767,9 @@ def prepare_graph(
         lengths = torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
         ikw = InteractionKwargs(data["lammps_class"], (n_real, n_ghost))
     else:
-        if not torch.compiler.is_compiling():
+        if torch.jit.is_scripting():
+            data["positions"].requires_grad_(True)
+        elif not _is_compiling():
             data["positions"].requires_grad_(True)
         positions = data["positions"]
         cell = data["cell"]

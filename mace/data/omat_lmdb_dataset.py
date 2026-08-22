@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import json
 import os
+import zipfile
 import zlib
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from typing import Sequence
 import lmdb
 import numpy as np
 import orjson
+from numpy.lib import format as npy_format
 from torch.utils.data import Dataset
 
 from mace.data.atomic_data import AtomicData
@@ -112,7 +114,33 @@ def _load_validated_natoms(metadata_path: Path) -> np.ndarray:
     return natoms
 
 
-def _lmdb_entry_count(shard_path: Path) -> int:
+def _natoms_metadata_length(
+    metadata_path: Path, *, validate_schema: bool = True
+) -> int:
+    with zipfile.ZipFile(metadata_path) as archive:
+        try:
+            stream = archive.open("natoms.npy")
+        except KeyError as exc:
+            raise ValueError(f"Missing natoms in {metadata_path}") from exc
+        with stream:
+            version = npy_format.read_magic(stream)
+            if version == (1, 0):
+                shape, _, dtype = npy_format.read_array_header_1_0(stream)
+            elif version == (2, 0):
+                shape, _, dtype = npy_format.read_array_header_2_0(stream)
+            else:
+                raise ValueError(
+                    f"Unsupported natoms array format {version}: {metadata_path}"
+                )
+    if not shape or (validate_schema and len(shape) != 1):
+        raise ValueError(f"natoms metadata must be one-dimensional: {metadata_path}")
+    length = int(shape[0])
+    if validate_schema and length and not np.issubdtype(dtype, np.integer):
+        raise ValueError(f"natoms metadata must have integer dtype: {metadata_path}")
+    return length
+
+
+def _lmdb_has_numeric_rows(shard_path: Path) -> bool:
     environment = lmdb.open(
         str(shard_path),
         subdir=False,
@@ -123,7 +151,8 @@ def _lmdb_entry_count(shard_path: Path) -> int:
     )
     try:
         with environment.begin(write=False) as transaction:
-            return int(transaction.stat()["entries"])
+            with transaction.cursor() as cursor:
+                return any(key.isdigit() for key, _ in cursor)
     finally:
         environment.close()
 
@@ -131,18 +160,11 @@ def _lmdb_entry_count(shard_path: Path) -> int:
 def _metadata_length(shard_path: Path) -> tuple[Path | None, int]:
     metadata_path = _metadata_path(shard_path)
     if metadata_path.is_file():
-        with np.load(metadata_path, allow_pickle=False) as metadata:
-            if "natoms" not in metadata:
-                raise ValueError(f"Missing natoms in {metadata_path}")
-            natoms = metadata["natoms"]
-            if natoms.ndim == 0:
-                raise ValueError(
-                    f"natoms metadata must be one-dimensional: {metadata_path}"
-                )
-            return metadata_path.resolve(), int(len(natoms))
+        return metadata_path.resolve(), _natoms_metadata_length(
+            metadata_path, validate_schema=False
+        )
 
-    entries = _lmdb_entry_count(shard_path)
-    if entries:
+    if _lmdb_has_numeric_rows(shard_path):
         raise ValueError(f"Missing metadata for non-empty shard {shard_path}")
     return None, 0
 
@@ -206,18 +228,22 @@ def _build_from_manifest(root: Path, manifest: Path) -> OMatShardIndex:
         metadata_value = entry.get("metadata")
         if metadata_value is None:
             metadata_path = None
-            lmdb_entries = _lmdb_entry_count(shard_path)
-            if rows or lmdb_entries:
+            if rows or _lmdb_has_numeric_rows(shard_path):
                 raise ValueError(f"Missing metadata for non-empty shard {shard_path}")
         elif isinstance(metadata_value, str):
             metadata_path = _safe_manifest_path(root, metadata_value, field="metadata")
             if not metadata_path.is_file():
                 raise FileNotFoundError(metadata_path)
-            metadata_rows = len(_load_validated_natoms(metadata_path))
+            metadata_rows = _natoms_metadata_length(metadata_path)
             if metadata_rows != rows:
                 raise ValueError(
                     f"natoms length {metadata_rows} does not match manifest row "
                     f"count {rows}: {metadata_path}"
+                )
+            if rows == 0 and _lmdb_has_numeric_rows(shard_path):
+                raise ValueError(
+                    f"Manifest declares an empty metadata file for non-empty LMDB "
+                    f"shard {shard_path}"
                 )
         else:
             raise ValueError(f"Invalid metadata path in {manifest}")
