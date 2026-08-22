@@ -1196,36 +1196,56 @@ def run(args) -> None:
                 "Please install it to use XPU device."
             )
 
-    tools.train(
-        model=model,
-        loss_fn=loss_fn,
-        train_loader=train_loader,
-        valid_loaders=valid_loaders,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-        checkpoint_handler=checkpoint_handler,
-        eval_interval=args.eval_interval,
-        start_epoch=start_epoch,
-        max_num_epochs=args.max_num_epochs,
-        logger=logger,
-        patience=args.patience,
-        save_all_checkpoints=args.save_all_checkpoints,
-        output_args=output_args,
-        device=device,
-        swa=swa,
-        ema=ema,
-        max_grad_norm=args.clip_grad,
-        log_errors=args.error_table,
-        log_wandb=args.wandb,
-        distributed=args.distributed,
-        distributed_model=distributed_model,
-        distributed_device_ids=distributed_device_ids,
-        plotter=plotter,
-        train_sampler=train_sampler,
-        rank=rank,
-        data_aug_magmom=args.data_aug_magmom,
-        compile_training=getattr(args, "compile_training", False),
+    diagnostics_config = tools.diagnostics_config_from_args(
+        args,
+        default_directory=Path(args.log_dir) / "training_diagnostics" / tag,
     )
+    training_diagnostics = (
+        None
+        if diagnostics_config is None
+        else tools.TrainingDiagnostics(
+            diagnostics_config,
+            rank=rank,
+            world_size=world_size,
+            device=device,
+            distributed=args.distributed,
+        )
+    )
+    try:
+        tools.train(
+            model=model,
+            loss_fn=loss_fn,
+            train_loader=train_loader,
+            valid_loaders=valid_loaders,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            checkpoint_handler=checkpoint_handler,
+            eval_interval=args.eval_interval,
+            start_epoch=start_epoch,
+            max_num_epochs=args.max_num_epochs,
+            logger=logger,
+            patience=args.patience,
+            save_all_checkpoints=args.save_all_checkpoints,
+            output_args=output_args,
+            device=device,
+            swa=swa,
+            ema=ema,
+            max_grad_norm=args.clip_grad,
+            log_errors=args.error_table,
+            log_wandb=args.wandb,
+            distributed=args.distributed,
+            distributed_model=distributed_model,
+            distributed_device_ids=distributed_device_ids,
+            plotter=plotter,
+            train_sampler=train_sampler,
+            rank=rank,
+            data_aug_magmom=args.data_aug_magmom,
+            compile_training=getattr(args, "compile_training", False),
+            training_diagnostics=training_diagnostics,
+        )
+    finally:
+        if training_diagnostics is not None:
+            training_diagnostics.close()
 
     logging.info("")
     logging.info("===========RESULTS===========")

@@ -18,6 +18,11 @@ from .torch_tools import (
     voigt_to_matrix,
 )
 from .train import SWAContainer, evaluate, train
+from .training_diagnostics import (
+    TrainingDiagnostics,
+    TrainingDiagnosticsConfig,
+    diagnostics_config_from_args,
+)
 from .utils import (
     AtomicNumberTable,
     MetricsLogger,
@@ -52,6 +57,9 @@ __all__ = [
     "train",
     "evaluate",
     "SWAContainer",
+    "TrainingDiagnostics",
+    "TrainingDiagnosticsConfig",
+    "diagnostics_config_from_args",
     "CheckpointHandler",
     "CheckpointIO",
     "CheckpointState",

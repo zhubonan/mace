@@ -28,6 +28,7 @@ from . import compile as mace_compile
 from . import torch_geometric
 from .checkpoint import CheckpointHandler, CheckpointState
 from .torch_tools import to_numpy
+from .training_diagnostics import TrainingStepTimings
 from .utils import (
     MetricsLogger,
     compute_mae,
@@ -239,6 +240,7 @@ def train(
     rank: Optional[int] = 0,
     data_aug_magmom: Optional[bool] = False,
     compile_training: bool = False,
+    training_diagnostics=None,
 ):
     if compile_training:
         if isinstance(optimizer, LBFGS):
@@ -340,6 +342,7 @@ def train(
             rank=rank,
             compile_training=compile_training,
             compiled_training_model=compiled_training_model,
+            training_diagnostics=training_diagnostics,
         )
         if distributed:
             torch.distributed.barrier()
@@ -464,6 +467,7 @@ def train_one_epoch(
     rank: Optional[int] = 0,
     compile_training: bool = False,
     compiled_training_model: Optional[torch.nn.Module] = None,
+    training_diagnostics=None,
 ) -> Optional[torch.nn.Module]:
     model_to_train = (
         model if compile_training or distributed_model is None else distributed_model
@@ -531,28 +535,88 @@ def train_one_epoch(
             )
             batch_iterator = itertools.chain(prefetched, batch_iterator)
 
-        for batch in batch_iterator:
-            _, opt_metrics = take_step(
-                model=model_to_train,
-                forward_model=compiled_training_model,
-                loss_fn=loss_fn,
-                batch=batch,
-                optimizer=optimizer,
-                ema=ema,
-                output_args=output_args,
-                max_grad_norm=max_grad_norm,
-                device=device,
-            )
-            if compile_training:
-                compiled_training_model = _synchronize_compiled_training_state(
-                    compiled_training_model,
+        if training_diagnostics is None:
+            for batch in batch_iterator:
+                _, opt_metrics = take_step(
+                    model=model_to_train,
+                    forward_model=compiled_training_model,
+                    loss_fn=loss_fn,
+                    batch=batch,
+                    optimizer=optimizer,
+                    ema=ema,
+                    output_args=output_args,
+                    max_grad_norm=max_grad_norm,
                     device=device,
-                    distributed=distributed,
                 )
-            opt_metrics["mode"] = "opt"
-            opt_metrics["epoch"] = epoch
-            if rank == 0:
-                logger.log(opt_metrics)
+                if compile_training:
+                    compiled_training_model = _synchronize_compiled_training_state(
+                        compiled_training_model,
+                        device=device,
+                        distributed=distributed,
+                    )
+                opt_metrics["mode"] = "opt"
+                opt_metrics["epoch"] = epoch
+                if rank == 0:
+                    logger.log(opt_metrics)
+        else:
+            while True:
+                training_diagnostics.prepare_step()
+                period_start = training_diagnostics.clock()
+                wait_start = period_start
+                try:
+                    with training_diagnostics.range("dataloader.next"):
+                        batch = next(batch_iterator)
+                except StopIteration:
+                    break
+                loader_wait_s = training_diagnostics.clock() - wait_start
+                _, opt_metrics, step_timings = take_step_with_diagnostics(
+                    model=model_to_train,
+                    forward_model=compiled_training_model,
+                    loss_fn=loss_fn,
+                    batch=batch,
+                    optimizer=optimizer,
+                    ema=ema,
+                    output_args=output_args,
+                    max_grad_norm=max_grad_norm,
+                    device=device,
+                    diagnostics=training_diagnostics,
+                )
+                if compile_training:
+                    compiled_training_model = _synchronize_compiled_training_state(
+                        compiled_training_model,
+                        device=device,
+                        distributed=distributed,
+                    )
+                step_period_s = training_diagnostics.clock() - period_start
+                facade = (
+                    None
+                    if compiled_training_model is None
+                    else _compiled_training_facade(compiled_training_model)
+                )
+                compiler_graph_count = None
+                if compile_training:
+                    compiler_graph_count = int(
+                        torch._dynamo.utils.counters["stats"].get("unique_graphs", 0)
+                    )
+                training_diagnostics.record_step(
+                    epoch=epoch,
+                    loader_wait_s=loader_wait_s,
+                    step_period_s=step_period_s,
+                    h2d_wall_s=step_timings.h2d_wall_s,
+                    train_wall_s=step_timings.train_wall_s,
+                    batch=batch,
+                    optimizer_enabled=True,
+                    ema_enabled=ema is not None,
+                    compile_requested=compile_training,
+                    compiled_active=bool(
+                        facade is not None and getattr(facade, "is_compiled", False)
+                    ),
+                    compiler_graph_count=compiler_graph_count,
+                )
+                opt_metrics["mode"] = "opt"
+                opt_metrics["epoch"] = epoch
+                if rank == 0:
+                    logger.log(opt_metrics)
 
     return compiled_training_model
 
@@ -605,6 +669,67 @@ def take_step(
     }
 
     return loss, loss_dict
+
+
+def take_step_with_diagnostics(
+    model: torch.nn.Module,
+    loss_fn: torch.nn.Module,
+    batch: torch_geometric.batch.Batch,
+    optimizer: torch.optim.Optimizer,
+    ema: Optional[ExponentialMovingAverage],
+    output_args: Dict[str, bool],
+    max_grad_norm: Optional[float],
+    device: torch.device,
+    diagnostics,
+    forward_model: Optional[torch.nn.Module] = None,
+) -> Tuple[float, Dict[str, Any], TrainingStepTimings]:
+    """Take one measured step; the ordinary hot path remains in `take_step`."""
+
+    step_start = diagnostics.clock()
+    h2d_start = step_start
+    with diagnostics.range("host_to_device"):
+        batch = batch.to(device)
+        batch_dict = batch.to_dict()
+    h2d_wall_s = diagnostics.clock() - h2d_start
+    train_start = diagnostics.clock()
+
+    optimizer.zero_grad(set_to_none=True)
+    kwargs = dict(
+        training=True,
+        compute_force=output_args["forces"],
+        compute_virials=output_args["virials"],
+        compute_stress=output_args["stress"],
+    )
+    if output_args.get("magforces", False):
+        kwargs["compute_magforces"] = True
+    with diagnostics.range("forward_loss"):
+        if forward_model is None:
+            output = model(batch_dict, **kwargs)
+        else:
+            output = forward_model(batch_dict)
+        loss = loss_fn(pred=output, ref=batch)
+    with diagnostics.range("backward_ddp"):
+        loss.backward()
+    if max_grad_norm is not None:
+        with diagnostics.range("gradient_clipping"):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+    with diagnostics.range("optimizer"):
+        optimizer.step()
+    if ema is not None:
+        with diagnostics.range("ema"):
+            ema.update()
+
+    loss_value = to_numpy(loss)
+    train_wall_s = diagnostics.clock() - train_start
+    loss_dict = {
+        "loss": loss_value,
+        "time": diagnostics.clock() - step_start,
+    }
+    return (
+        loss,
+        loss_dict,
+        TrainingStepTimings(h2d_wall_s=h2d_wall_s, train_wall_s=train_wall_s),
+    )
 
 
 def take_step_lbfgs(

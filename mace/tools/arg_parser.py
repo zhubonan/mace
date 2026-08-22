@@ -537,6 +537,42 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         help="Maximum LMDB environments open in each worker",
     )
     parser.add_argument(
+        "--training_diagnostics",
+        choices=("off", "summary", "deep"),
+        default="off",
+        help="Opt-in training diagnostics level",
+    )
+    parser.add_argument(
+        "--training_diagnostics_interval",
+        type=positive_int,
+        default=1000,
+        help="Steps between buffered flushes and sparse rank summaries",
+    )
+    parser.add_argument(
+        "--training_diagnostics_dir",
+        type=str,
+        default=None,
+        help="Rank-specific diagnostic output directory",
+    )
+    parser.add_argument(
+        "--training_diagnostics_start_step",
+        type=int,
+        default=0,
+        help="First optimizer step included in a bounded deep capture",
+    )
+    parser.add_argument(
+        "--training_diagnostics_steps",
+        type=int,
+        default=0,
+        help="Number of optimizer steps in a bounded deep capture",
+    )
+    parser.add_argument(
+        "--training_diagnostics_backend",
+        choices=("nvtx", "torch_profiler"),
+        default="nvtx",
+        help="Deep-capture backend",
+    )
+    parser.add_argument(
         "--pin_memory",
         help="Pin memory for data loading",
         default=True,
