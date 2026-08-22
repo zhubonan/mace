@@ -17,6 +17,8 @@ from .omat_cost_profile import (
     OMAT_COST_PROFILE_MANIFEST,
     OMatCostProfile,
     OMatCostShard,
+    finalize_cost_profile,
+    generate_cost_shard,
     load_omat_cost_profile,
 )
 from .padding_tools import build_fake_padding_graph
@@ -69,6 +71,8 @@ __all__ = [
     "OMAT_COST_PROFILE_MANIFEST",
     "OMatCostProfile",
     "OMatCostShard",
+    "finalize_cost_profile",
+    "generate_cost_shard",
     "load_omat_cost_profile",
     "build_fake_padding_graph",
 ]

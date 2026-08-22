@@ -6,17 +6,23 @@
 import hashlib
 import json
 from pathlib import Path
+import zlib
 
 import lmdb
 import numpy as np
+import orjson
 import pytest
 
 import mace.data.omat_cost_profile as cost_profile_module
+from mace import tools
 from mace.data.omat_cost_profile import (
     OMAT_COST_PROFILE_FORMAT,
     OMAT_COST_PROFILE_MANIFEST,
+    finalize_cost_profile,
+    generate_cost_shard,
 )
 from mace.data.omat_lmdb_dataset import (
+    OMatLMDBDataset,
     build_omat_shard_index,
     write_omat_manifest,
 )
@@ -113,6 +119,39 @@ def _write_profile(root: Path, index, cutoff: float, nedges_by_shard) -> Path:
     manifest = profile_root / OMAT_COST_PROFILE_MANIFEST
     manifest.write_text(json.dumps(payload), encoding="utf-8")
     return profile_root
+
+
+def _write_real_manifest_dataset(root: Path, rows: list[dict]):
+    family = root / "family"
+    family.mkdir(parents=True)
+    shard = family / "db_0.aselmdb"
+    environment = lmdb.open(str(shard), subdir=False, map_size=16 << 20)
+    with environment.begin(write=True) as transaction:
+        for row_index, row in enumerate(rows):
+            transaction.put(
+                str(row_index + 1).encode("ascii"),
+                zlib.compress(orjson.dumps(row)),
+            )
+    environment.close()
+    np.savez(
+        family / "metadata_db_0.npz",
+        natoms=np.asarray([len(row["numbers"]) for row in rows], dtype=np.int64),
+    )
+    discovered = build_omat_shard_index(root)
+    write_omat_manifest(root, discovered, dataset_id="OMat24-real-test")
+    return build_omat_shard_index(root)
+
+
+def _official_structure(positions: list[list[float]]) -> dict:
+    return {
+        "numbers": [1] * len(positions),
+        "positions": positions,
+        "cell": (np.eye(3) * 20.0).tolist(),
+        "pbc": [False, False, False],
+        "energy": 0.0,
+        "forces": np.zeros((len(positions), 3)).tolist(),
+        "stress": [0.0] * 6,
+    }
 
 
 def test_cost_profile_validates_identity_contract_and_loads_lazily(
@@ -237,3 +276,95 @@ def test_cost_profile_rejects_missing_or_unsafe_cost_path(tmp_path):
     manifest.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         index.with_cost_profile(profile_root, cutoff=5.0)
+
+
+def test_generate_and_finalize_cost_profile_matches_online_graphs(tmp_path):
+    dataset_root = tmp_path / "dataset"
+    index = _write_real_manifest_dataset(
+        dataset_root,
+        [
+            _official_structure([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            _official_structure(
+                [[0.0, 0.0, 0.0], [0.7, 0.0, 0.0], [3.0, 0.0, 0.0]]
+            ),
+        ],
+    )
+    profile_root = tmp_path / "costs"
+    shard_result = generate_cost_shard(index, profile_root, cutoff=1.5, shard_index=0)
+
+    assert shard_result.is_file()
+    assert not (profile_root / OMAT_COST_PROFILE_MANIFEST).exists()
+    with np.load(shard_result, allow_pickle=False) as result:
+        generated = np.asarray(result["nedges"])
+    dataset = OMatLMDBDataset(
+        dataset_root,
+        r_max=1.5,
+        z_table=tools.AtomicNumberTable([1]),
+        heads=["Default"],
+    )
+    expected = np.asarray(
+        [dataset[row].edge_index.shape[1] for row in range(len(dataset))]
+    )
+    np.testing.assert_array_equal(generated, expected)
+    dataset.close()
+
+    manifest = finalize_cost_profile(index, profile_root, cutoff=1.5)
+    associated = index.with_cost_profile(profile_root, cutoff=1.5)
+
+    assert manifest == profile_root / OMAT_COST_PROFILE_MANIFEST
+    np.testing.assert_array_equal(associated.load_nedges(0), expected)
+    assert associated.cost_profile.shards[0].total_atoms == 5
+
+
+def test_generate_cost_shard_resumes_only_a_valid_complete_result(tmp_path):
+    index = _write_real_manifest_dataset(
+        tmp_path / "dataset",
+        [_official_structure([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])],
+    )
+    profile_root = tmp_path / "costs"
+    result = generate_cost_shard(index, profile_root, cutoff=1.5, shard_index=0)
+    with np.load(result, allow_pickle=False) as payload:
+        original_nedges = np.asarray(payload["nedges"]).copy()
+    original_mtime = result.stat().st_mtime_ns
+
+    resumed = generate_cost_shard(index, profile_root, cutoff=1.5, shard_index=0)
+
+    assert resumed == result
+    assert result.stat().st_mtime_ns == original_mtime
+    result.write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="existing shard result"):
+        generate_cost_shard(index, profile_root, cutoff=1.5, shard_index=0)
+    regenerated = generate_cost_shard(
+        index, profile_root, cutoff=1.5, shard_index=0, force=True
+    )
+    with np.load(regenerated, allow_pickle=False) as payload:
+        np.testing.assert_array_equal(payload["nedges"], original_nedges)
+    assert not list(result.parent.glob(".*.tmp"))
+
+
+def test_finalize_rejects_partial_profile_and_records_empty_shards(tmp_path):
+    index = _write_manifest_dataset(tmp_path / "dataset", [[2], []])
+    profile_root = tmp_path / "costs"
+    with pytest.raises(ValueError, match="incomplete"):
+        finalize_cost_profile(index, profile_root, cutoff=1.5)
+
+    profile_root.mkdir()
+    result_root = profile_root / "shards"
+    result_root.mkdir()
+    cost_profile_module._write_cost_shard_result(
+        index=index,
+        profile_root=profile_root,
+        cutoff=1.5,
+        shard_index=0,
+        nedges=np.asarray([4], dtype=np.int64),
+    )
+    manifest = finalize_cost_profile(index, profile_root, cutoff=1.5)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+
+    assert payload["shards"][1] == {
+        "source_path": "family/db_1.aselmdb",
+        "cost_path": None,
+        "rows": 0,
+        "total_atoms": 0,
+        "total_edges": 0,
+    }
