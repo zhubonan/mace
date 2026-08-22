@@ -198,6 +198,13 @@ Each sampled step records:
 - current and peak allocated/reserved CUDA memory when CUDA is active; and
 - compiler-active or eager-fallback state when compiled training is requested.
 
+Dynamic compiled training consumes its first one or two batches before the
+ordinary measured loop to create and validate the compiled facade. Their
+replayed optimizer records are marked `compile_prefetched=true` and
+`timing_representative=false`; they are retained in rank-local JSONL for audit
+but excluded from sparse rank timing aggregates. Subsequent compiled records
+have the same timing semantics as eager summary records.
+
 Asynchronous host phase timings are labelled as host wall time. The low-overhead
 mode does not present Python launch intervals as GPU kernel durations.
 
@@ -274,7 +281,11 @@ atom-only sampler and retain irreducible single-structure tails explicitly.
 Diagnostics tests use controlled clocks and synthetic loaders to verify exposed
 wait, step-period boundaries, batching statistics, buffering, output schemas,
 rank aggregation, clean shutdown, disabled-path equivalence, and profiler-window
-bounds. CPU distributed tests verify collective ordering and per-rank files.
+bounds. CPU distributed tests use a real two-process Gloo group to verify
+collective ordering, rank-local files, and the rank-zero aggregate. Compatibility
+tests cover resumed-epoch sampler reconstruction, profile-root relocation,
+empty shards, irreducibly dense structures, and exclusion of diagnostics from
+checkpoint/model state.
 
 ## Qualification and acceptance gates
 

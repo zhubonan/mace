@@ -162,6 +162,37 @@ def test_edge_sampler_is_deterministic_and_epoch_changes_order(tmp_path):
     assert first.contract_digest() == second.contract_digest()
 
 
+def test_edge_sampler_resume_reconstructs_the_requested_epoch_exactly(tmp_path):
+    index = make_cost_index(
+        tmp_path,
+        [list(range(1, 25)), list(range(25, 49))],
+        [list(range(101, 125)), list(range(125, 149))],
+    )
+    resumed = ShardWindowAtomEdgeBalancedBatchSampler(
+        index,
+        batch_size=4,
+        seed=23,
+        epoch=7,
+        num_replicas=2,
+        rank=1,
+        window_shards=1,
+    )
+    advanced = ShardWindowAtomEdgeBalancedBatchSampler(
+        index,
+        batch_size=4,
+        seed=23,
+        epoch=0,
+        num_replicas=2,
+        rank=1,
+        window_shards=1,
+    )
+    advanced.set_epoch(7)
+
+    assert list(resumed) == list(advanced)
+    assert resumed.contract_payload() == advanced.contract_payload()
+    assert resumed.contract_digest() == advanced.contract_digest()
+
+
 def test_edge_sampler_reduces_edge_tail_when_atoms_and_edges_are_decorrelated(
     tmp_path,
 ):
@@ -211,6 +242,28 @@ def test_edge_sampler_balances_simultaneous_rank_packs(tmp_path):
 
     assert max(simultaneous_edge_spread) <= 8
     assert max(simultaneous_atom_spread) <= 54
+
+
+def test_edge_sampler_keeps_an_irreducibly_dense_structure_visible(tmp_path):
+    natoms = [8] * 16
+    nedges = [32] * 15 + [1_000_000]
+    index = make_cost_index(tmp_path, [natoms], [nedges])
+    ranks = [
+        list(sampler)
+        for sampler in rank_samplers(
+            index,
+            batch_size=4,
+            num_replicas=2,
+            window_shards=1,
+        )
+    ]
+    used = flatten([batch for batches in ranks for batch in batches])
+    _, edges = global_costs(index)
+    totals = [int(edges[batch].sum()) for batches in ranks for batch in batches]
+
+    assert sorted(used) == list(range(len(index)))
+    assert used.count(15) == 1
+    assert max(totals) >= 1_000_000
 
 
 def test_edge_sampler_loads_atom_and_edge_arrays_in_bounded_windows(tmp_path):

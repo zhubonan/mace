@@ -492,6 +492,7 @@ def train_one_epoch(
             logger.log(opt_metrics)
     else:
         batch_iterator = iter(data_loader)
+        compile_prefetched_batches = 0
         if compile_training and compiled_training_model is None:
             try:
                 first_batch = next(batch_iterator).to(device)
@@ -533,6 +534,7 @@ def train_one_epoch(
                 if validation_batch is None
                 else (first_batch, validation_batch)
             )
+            compile_prefetched_batches = len(prefetched)
             batch_iterator = itertools.chain(prefetched, batch_iterator)
 
         if training_diagnostics is None:
@@ -571,6 +573,9 @@ def train_one_epoch(
                     if callable(abort_step):
                         abort_step()
                     break
+                compile_prefetched = compile_prefetched_batches > 0
+                if compile_prefetched:
+                    compile_prefetched_batches -= 1
                 loader_wait_s = training_diagnostics.clock() - wait_start
                 _, opt_metrics, step_timings = take_step_with_diagnostics(
                     model=model_to_train,
@@ -615,6 +620,7 @@ def train_one_epoch(
                         facade is not None and getattr(facade, "is_compiled", False)
                     ),
                     compiler_graph_count=compiler_graph_count,
+                    compile_prefetched=compile_prefetched,
                 )
                 opt_metrics["mode"] = "opt"
                 opt_metrics["epoch"] = epoch

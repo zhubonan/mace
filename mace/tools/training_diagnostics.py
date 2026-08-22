@@ -157,7 +157,7 @@ class TrainingDiagnostics:
                     record_shapes=True,
                     profile_memory=True,
                 )
-                self._profiler.__enter__()
+                self._profiler.start()
                 self._profiler_collection_enabled = True
             elif not self._profiler_collection_enabled:
                 self._toggle_profiler_collection(True)
@@ -217,7 +217,7 @@ class TrainingDiagnostics:
         profiler = self._profiler
         if profiler is None:
             return
-        profiler.__exit__(None, None, None)
+        profiler.stop()
         if export:
             end_step = self.config.start_step + self._captured_steps - 1
             profiler.export_chrome_trace(str(self._trace_path(end_step)))
@@ -308,6 +308,7 @@ class TrainingDiagnostics:
         compile_requested: bool,
         compiled_active: bool,
         compiler_graph_count: int | None,
+        compile_prefetched: bool = False,
     ) -> None:
         if self._closed:
             raise RuntimeError("Cannot record a step after diagnostics close")
@@ -319,6 +320,7 @@ class TrainingDiagnostics:
         atoms = int(batch.positions.shape[0])
         edges = int(batch.edge_index.shape[1])
         step = self.optimizer_step
+        timing_representative = not bool(compile_prefetched)
         record = {
             "record_type": "step",
             "schema_version": self._SCHEMA_VERSION,
@@ -338,6 +340,8 @@ class TrainingDiagnostics:
             "compile_requested": bool(compile_requested),
             "compiled_active": bool(compiled_active),
             "compiler_graph_count": compiler_graph_count,
+            "compile_prefetched": bool(compile_prefetched),
+            "timing_representative": timing_representative,
             "cuda_memory_allocated_bytes": allocated,
             "cuda_memory_reserved_bytes": reserved,
             "cuda_peak_memory_allocated_bytes": peak_allocated,
@@ -346,7 +350,7 @@ class TrainingDiagnostics:
         self._rank_buffer.append(record)
         self.optimizer_step += 1
 
-        if self.optimizer_step % self.config.interval == 0:
+        if timing_representative and self.optimizer_step % self.config.interval == 0:
             local_values = torch.tensor(
                 [
                     loader_wait_s,

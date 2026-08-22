@@ -180,6 +180,25 @@ def test_cost_profile_validates_identity_contract_and_loads_lazily(
     assert associated.load_nedges(1).dtype == np.int64
 
 
+def test_cost_profile_can_be_relocated_without_changing_its_identity(tmp_path):
+    index = _write_manifest_dataset(tmp_path / "dataset", [[2, 4], []])
+    profile_root = _write_profile(tmp_path / "original", index, 5.0, [[6, 12], []])
+    original = index.with_cost_profile(profile_root, cutoff=5.0).cost_profile
+    relocated_root = tmp_path / "relocated" / "edge-profile"
+    relocated_root.parent.mkdir()
+    profile_root.rename(relocated_root)
+
+    relocated_index = index.with_cost_profile(relocated_root, cutoff=5.0)
+    relocated = relocated_index.cost_profile
+
+    assert relocated.profile_id == original.profile_id
+    assert relocated.manifest_sha256 == original.manifest_sha256
+    assert relocated.root == relocated_root.resolve()
+    assert relocated.shards[0].cost_path.is_relative_to(relocated.root)
+    np.testing.assert_array_equal(relocated_index.load_nedges(0), [6, 12])
+    np.testing.assert_array_equal(relocated_index.load_nedges(1), [])
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [

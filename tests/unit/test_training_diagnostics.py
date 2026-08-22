@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from mace import tools
+from mace.tools.checkpoint import CheckpointBuilder, CheckpointState
 from mace.tools.training_diagnostics import (
     TrainingDiagnostics,
     TrainingDiagnosticsConfig,
@@ -416,6 +417,106 @@ def test_measured_step_preserves_optimizer_behavior_and_phase_boundaries():
     ]
 
 
+def test_diagnostics_do_not_enter_model_or_checkpoint_state(tmp_path):
+    model = TinyModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
+    diagnostics = TrainingDiagnostics(
+        summary_config(tmp_path),
+        rank=0,
+        world_size=1,
+        device=torch.device("cpu"),
+        distributed=False,
+    )
+
+    train_tools.train_one_epoch(
+        model=model,
+        loss_fn=TinyLoss(),
+        data_loader=[TinyBatch()],
+        optimizer=optimizer,
+        epoch=0,
+        output_args={"forces": False, "virials": False, "stress": False},
+        max_grad_norm=10.0,
+        ema=None,
+        logger=SimpleNamespace(log=lambda _record: None),
+        device=torch.device("cpu"),
+        distributed=False,
+        training_diagnostics=diagnostics,
+    )
+    diagnostics.close()
+    checkpoint = CheckpointBuilder.create_checkpoint(
+        CheckpointState(model, optimizer, scheduler)
+    )
+
+    assert set(checkpoint) == {"model", "optimizer", "lr_scheduler"}
+    assert set(checkpoint["model"]) == {"weight"}
+    assert not hasattr(model, "training_diagnostics")
+    assert all("diagnostic" not in key for key in model.state_dict())
+
+
+def test_compiled_training_path_records_diagnostics_without_fallback(
+    tmp_path, monkeypatch
+):
+    model = TinyModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+    class CompiledFacade:
+        is_compiled = True
+
+        def __call__(self, batch):
+            return model(batch)
+
+    facade = CompiledFacade()
+    monkeypatch.setattr(
+        train_tools.mace_compile,
+        "compile_training_model",
+        lambda *args, **kwargs: facade,
+    )
+    diagnostics = TrainingDiagnostics(
+        summary_config(tmp_path, interval=1),
+        rank=0,
+        world_size=1,
+        device=torch.device("cpu"),
+        distributed=False,
+    )
+
+    result = train_tools.train_one_epoch(
+        model=model,
+        loss_fn=TinyLoss(),
+        data_loader=[TinyBatch(), TinyBatch(), TinyBatch()],
+        optimizer=optimizer,
+        epoch=0,
+        output_args={"forces": False, "virials": False, "stress": False},
+        max_grad_norm=10.0,
+        ema=None,
+        logger=SimpleNamespace(log=lambda _record: None),
+        device=torch.device("cpu"),
+        distributed=False,
+        compile_training=True,
+        training_diagnostics=diagnostics,
+    )
+    diagnostics.close()
+    records = [
+        record
+        for record in read_jsonl(tmp_path / "rank-00000.jsonl")
+        if record["record_type"] == "step"
+    ]
+
+    assert result is facade
+    assert len(records) == 3
+    assert all(record["compile_requested"] is True for record in records)
+    assert all(record["compiled_active"] is True for record in records)
+    assert all(record["compiler_graph_count"] is not None for record in records)
+    assert [record["compile_prefetched"] for record in records] == [True, True, False]
+    assert [record["timing_representative"] for record in records] == [
+        False,
+        False,
+        True,
+    ]
+    aggregate = read_jsonl(tmp_path / "rank-00000-aggregate.jsonl")
+    assert [record["optimizer_step"] for record in aggregate[1:]] == [2]
+
+
 def deep_config(tmp_path, *, start=1, steps=2, backend="nvtx"):
     return TrainingDiagnosticsConfig(
         mode="deep",
@@ -506,18 +607,17 @@ def test_nvtx_ranges_are_bounded_to_declared_optimizer_steps(tmp_path, monkeypat
 
 class FakeProfiler:
     def __init__(self):
-        self.entered = 0
-        self.exited = 0
+        self.started = 0
+        self.stopped = 0
         self.steps = 0
         self.exported = []
         self.collection_toggles = []
 
-    def __enter__(self):
-        self.entered += 1
-        return self
+    def start(self):
+        self.started += 1
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.exited += 1
+    def stop(self):
+        self.stopped += 1
 
     def step(self):
         self.steps += 1
@@ -568,7 +668,7 @@ def test_torch_profiler_exports_one_bounded_chrome_trace_per_rank(
         torch.profiler.ProfilerActivity.CPU,
         torch.profiler.ProfilerActivity.CUDA,
     }
-    assert profiler.entered == profiler.exited == 1
+    assert profiler.started == profiler.stopped == 1
     assert profiler.steps == 2
     assert labels == ["forward_loss", "forward_loss"]
     assert profiler.exported == [tmp_path / "rank-00003-step-00000000-00000001.json"]
@@ -613,7 +713,7 @@ def test_torch_profiler_pauses_across_loader_exhaustion_without_splitting_trace(
         torch.profiler.ProfilerActivity.CUDA,
     )
     assert len(factories) == 1
-    assert profiler.entered == profiler.exited == 1
+    assert profiler.started == profiler.stopped == 1
     assert profiler.collection_toggles == [(False, activities), (True, activities)]
     assert profiler.steps == 2
     assert profiler.exported == [tmp_path / "rank-00000-step-00000001-00000002.json"]
