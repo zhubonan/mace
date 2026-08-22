@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -34,7 +35,7 @@ def _build_atom_edge_balanced_batches(
 ) -> tuple[
     list[tuple[list[int], int, int]], np.ndarray, np.ndarray, np.ndarray
 ]:
-    """Pack complete rows into fixed-size bins, balancing edges before atoms."""
+    """Preserve atom-balanced bins, then minimize their edge imbalance."""
 
     if len(indices) != len(natoms) or len(indices) != len(nedges):
         raise ValueError("indices, natoms, and nedges must have equal lengths")
@@ -46,33 +47,45 @@ def _build_atom_edge_balanced_batches(
     complete_indices = indices[complete_positions]
     complete_atoms = natoms[complete_positions]
     complete_edges = nedges[complete_positions]
-    tie_break = rng.permutation(len(complete_indices))
-    cost_order = np.lexsort((tie_break, complete_atoms, complete_edges))
-    complete_indices = complete_indices[cost_order]
-    complete_atoms = complete_atoms[cost_order]
-    complete_edges = complete_edges[cost_order]
-
     batch_count = len(complete_indices) // batch_size
-    batch_indices: list[list[int]] = [[] for _ in range(batch_count)]
-    atom_totals = np.zeros(batch_count, dtype=np.int64)
-    edge_totals = np.zeros(batch_count, dtype=np.int64)
-    for quantile in range(batch_size):
-        start = quantile * batch_count
-        stop = start + batch_count
-        quantile_indices = complete_indices[start:stop]
-        quantile_atoms = complete_atoms[start:stop]
-        quantile_edges = complete_edges[start:stop]
+    atom_order = np.argsort(complete_atoms, kind="stable")
+    slot_atoms = complete_atoms[atom_order].reshape(batch_size, batch_count).copy()
+    slot_atoms[1::2] = slot_atoms[1::2, ::-1].copy()
+    slot_atoms = slot_atoms.T
 
-        candidate_ties = rng.permutation(batch_count)
+    batch_indices: list[list[int]] = [[] for _ in range(batch_count)]
+    atom_totals = slot_atoms.sum(axis=1)
+    edge_totals = np.zeros(batch_count, dtype=np.int64)
+    atom_values = np.unique(complete_atoms)
+    group_max_edges = np.asarray(
+        [complete_edges[complete_atoms == value].max() for value in atom_values]
+    )
+    group_order = np.lexsort((-atom_values, -group_max_edges))
+    for group_index in group_order:
+        atom_value = atom_values[group_index]
+        candidate_positions = np.flatnonzero(complete_atoms == atom_value)
+        candidate_ties = rng.permutation(len(candidate_positions))
         candidate_order = np.lexsort(
-            (candidate_ties, -quantile_atoms, -quantile_edges)
+            (candidate_ties, -complete_edges[candidate_positions])
         )
+        slot_counts = np.count_nonzero(slot_atoms == atom_value, axis=1)
         batch_ties = rng.permutation(batch_count)
-        target_order = np.lexsort((batch_ties, atom_totals, edge_totals))
-        for candidate, target in zip(candidate_order, target_order, strict=True):
-            batch_indices[int(target)].append(int(quantile_indices[candidate]))
-            atom_totals[target] += int(quantile_atoms[candidate])
-            edge_totals[target] += int(quantile_edges[candidate])
+        targets = [
+            (int(edge_totals[batch]), int(batch_ties[batch]), batch, int(slots))
+            for batch, slots in enumerate(slot_counts)
+            if slots
+        ]
+        heapq.heapify(targets)
+        for candidate_offset in candidate_order:
+            _, tie, batch, slots = heapq.heappop(targets)
+            candidate = candidate_positions[candidate_offset]
+            edge_count = int(complete_edges[candidate])
+            batch_indices[batch].append(int(complete_indices[candidate]))
+            edge_totals[batch] += edge_count
+            if slots > 1:
+                heapq.heappush(
+                    targets, (int(edge_totals[batch]), tie, batch, slots - 1)
+                )
 
     complete_batches = [
         (batch, int(total_atoms), int(total_edges))

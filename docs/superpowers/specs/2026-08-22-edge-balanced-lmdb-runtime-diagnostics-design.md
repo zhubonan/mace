@@ -124,13 +124,13 @@ configured shard-locality and handle bounds.
 ### Batch construction
 
 Within an access window, complete rows are assigned to a fixed number of
-fixed-capacity batch bins. The scalable deterministic procedure distributes one
-row from each edge-cost quantile to every batch, balancing the primary edge
-dimension. Within each quantile, atom-heavy rows are assigned against current
-atom deficits with seeded tie-breaking. A bounded deterministic refinement may
-exchange rows only when it improves the worst normalized edge total without
-worsening the worst normalized atom total, or improves atom balance at equal
-edge quality.
+fixed-capacity batch bins. Atom balance is a hard invariant: the sampler first
+constructs the exact same atom-count slots as the atom-only striped packer and
+therefore preserves its per-batch atom totals exactly. Structures with the same
+atom count are then assigned to those equal-atom slots in descending edge-cost
+order, always selecting the currently lightest eligible edge bin with seeded
+tie-breaking. Edge balance is optimized only within this atom-total boundary;
+it may never trade an atom-safe batch for a lower edge total.
 
 The procedure must remain bounded by active-window rows and have near sorting
 complexity rather than comparing every row with every batch. Tests and complete
@@ -297,7 +297,7 @@ then to real GPU training:
 - replay a complete epoch and report median, p95, p99, maximum, and simultaneous
   rank spread for structures, atoms, and edges;
 - demonstrate strictly better p99 and maximum edge-total spread than atom-only
-  sampling without regressing its atom-total safety boundary materially;
+  sampling while preserving its per-window atom-total distribution exactly;
 - retain identical sample coverage and per-rank optimizer-step count;
 - run compiled four-rank worst-edge and densest-structure optimizer steps with
   finite loss and no OOM or fallback;

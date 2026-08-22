@@ -220,6 +220,41 @@ def test_edge_sampler_reduces_edge_tail_when_atoms_and_edges_are_decorrelated(
     assert np.ptp(edge_mode_atom_totals) == 0
 
 
+def test_edge_sampler_preserves_atom_balance_with_variable_edge_density(tmp_path):
+    source = np.random.default_rng(0)
+    natoms = np.resize(
+        np.asarray([2, 4, 8, 16, 32, 64, 96], dtype=np.int64), 256
+    )
+    source.shuffle(natoms)
+    edge_density = source.choice(
+        np.asarray([12, 16, 24, 48, 72, 96], dtype=np.int64), size=len(natoms)
+    )
+    nedges = natoms * edge_density
+    index = make_cost_index(tmp_path, [natoms.tolist()], [nedges.tolist()])
+    atom_batches = [
+        list(
+            ShardWindowAtomBalancedBatchSampler(
+                index, 8, seed=17, num_replicas=1, rank=0, window_shards=1
+            )
+        )
+    ]
+    edge_batches = [
+        list(
+            ShardWindowAtomEdgeBalancedBatchSampler(
+                index, 8, seed=17, num_replicas=1, rank=0, window_shards=1
+            )
+        )
+    ]
+    atoms, edges = global_costs(index)
+    atom_mode_atom_totals = batch_totals(atom_batches, atoms)
+    edge_mode_atom_totals = batch_totals(edge_batches, atoms)
+    atom_mode_edge_totals = batch_totals(atom_batches, edges)
+    edge_mode_edge_totals = batch_totals(edge_batches, edges)
+
+    assert np.ptp(edge_mode_atom_totals) <= np.ptp(atom_mode_atom_totals)
+    assert np.ptp(edge_mode_edge_totals) < np.ptp(atom_mode_edge_totals)
+
+
 def test_edge_sampler_balances_simultaneous_rank_packs(tmp_path):
     natoms = ([3] * 32) + ([30] * 32)
     nedges = list(range(5, 69))
