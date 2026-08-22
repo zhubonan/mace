@@ -169,25 +169,52 @@ def _build_train_loader_and_sampler(
     rank: int,
 ):
     batch_sampling = getattr(args, "batch_sampling", "random")
-    if batch_sampling == "shard_window_atom_balanced":
+    edge_balanced = batch_sampling == "shard_window_atom_edge_balanced"
+    balanced_omat = batch_sampling in {
+        "shard_window_atom_balanced",
+        "shard_window_atom_edge_balanced",
+    }
+    cost_profile = getattr(args, "lmdb_cost_profile", None)
+    if cost_profile is not None and not edge_balanced:
+        raise ValueError(
+            "--lmdb_cost_profile is only valid with "
+            "--batch_sampling=shard_window_atom_edge_balanced"
+        )
+    if edge_balanced:
+        if getattr(args, "lmdb_backend", None) != "omat_direct":
+            raise ValueError(
+                "Edge-balanced OMat sampling requires --lmdb_backend=omat_direct"
+            )
+        if cost_profile is None:
+            raise ValueError(
+                "Edge-balanced OMat sampling requires --lmdb_cost_profile"
+            )
+    if balanced_omat:
         if len(heads) != 1:
             raise ValueError(
-                "Atom-balanced OMat sampling requires exactly one training head"
+                "Balanced OMat sampling requires exactly one training head"
             )
         if args.lbfgs:
-            raise ValueError("Atom-balanced OMat sampling does not support LBFGS")
+            raise ValueError("Balanced OMat sampling does not support LBFGS")
         if args.data_aug_magmom:
             raise ValueError(
-                "Atom-balanced OMat sampling does not support magnetic augmentation"
+                "Balanced OMat sampling does not support magnetic augmentation"
             )
         native_dataset = train_sets[heads[0]]
         if isinstance(native_dataset, ConcatDataset):
             raise ValueError(
-                "Atom-balanced OMat sampling requires one native OMat dataset"
+                "Balanced OMat sampling requires one native OMat dataset"
             )
         if not isinstance(native_dataset, data.OMatLMDBDataset):
-            raise ValueError("Atom-balanced OMat sampling requires an OMatLMDBDataset")
-        train_sampler = data.ShardWindowAtomBalancedBatchSampler(
+            raise ValueError("Balanced OMat sampling requires an OMatLMDBDataset")
+        if edge_balanced:
+            native_dataset.shard_index = native_dataset.shard_index.with_cost_profile(
+                cost_profile, cutoff=native_dataset.r_max
+            )
+            sampler_type = data.ShardWindowAtomEdgeBalancedBatchSampler
+        else:
+            sampler_type = data.ShardWindowAtomBalancedBatchSampler
+        train_sampler = sampler_type(
             native_dataset.shard_index,
             batch_size=args.batch_size,
             seed=args.seed,
@@ -894,7 +921,10 @@ def run(args) -> None:
             dataset_size = len(train_sets[head_config.head_name])
         logging.info(f"Head '{head_config.head_name}' training dataset size: {dataset_size}")
 
-        if args.batch_sampling != "shard_window_atom_balanced":
+        if args.batch_sampling not in {
+            "shard_window_atom_balanced",
+            "shard_window_atom_edge_balanced",
+        }:
             train_loader_head = torch_geometric.dataloader.DataLoader(
                 dataset=train_sets[head_config.head_name],
                 batch_size=args.batch_size,
@@ -913,7 +943,10 @@ def run(args) -> None:
         world_size=world_size,
         rank=rank,
     )
-    if args.batch_sampling == "shard_window_atom_balanced":
+    if args.batch_sampling in {
+        "shard_window_atom_balanced",
+        "shard_window_atom_edge_balanced",
+    }:
         head_configs[0].train_loader = train_loader
     valid_sampler = None
     if args.distributed:

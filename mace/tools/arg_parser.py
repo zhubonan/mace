@@ -510,9 +510,19 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--batch_sampling",
-        choices=("random", "shard_window_atom_balanced"),
+        choices=(
+            "random",
+            "shard_window_atom_balanced",
+            "shard_window_atom_edge_balanced",
+        ),
         default="random",
         help="Training batch sampling policy",
+    )
+    parser.add_argument(
+        "--lmdb_cost_profile",
+        type=str,
+        default=None,
+        help="Exact cutoff-specific edge-cost profile for edge-balanced OMat sampling",
     )
     parser.add_argument(
         "--lmdb_shard_window",

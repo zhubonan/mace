@@ -74,6 +74,35 @@ def _synchronize_compiled_training_state(
     return model
 
 
+def _verify_distributed_sampler_contract(
+    train_sampler,
+    *,
+    distributed: bool,
+    device: torch.device,
+) -> None:
+    """Fail every rank before stepping if edge-sampler identities differ."""
+
+    contract_digest = getattr(train_sampler, "contract_digest", None)
+    if not distributed or not callable(contract_digest):
+        return
+    digest = contract_digest()
+    try:
+        digest_bytes = bytes.fromhex(digest)
+    except ValueError as exc:
+        raise RuntimeError("Invalid edge-sampler contract digest") from exc
+    if len(digest_bytes) != 32:
+        raise RuntimeError("Invalid edge-sampler contract digest length")
+    local = torch.tensor(list(digest_bytes), dtype=torch.uint8, device=device)
+    gathered = [
+        torch.empty_like(local) for _ in range(torch.distributed.get_world_size())
+    ]
+    torch.distributed.all_gather(gathered, local)
+    if any(not torch.equal(candidate, local) for candidate in gathered):
+        raise RuntimeError(
+            "Distributed edge-sampler contract mismatch across training ranks"
+        )
+
+
 def valid_err_log(
     valid_loss,
     eval_metrics,
@@ -288,6 +317,9 @@ def train(
         # Train
         if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
             train_sampler.set_epoch(epoch)
+        _verify_distributed_sampler_contract(
+            train_sampler, distributed=distributed, device=device
+        )
         if "ScheduleFree" in type(optimizer).__name__:
             optimizer.train()
 

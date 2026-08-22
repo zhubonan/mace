@@ -21,6 +21,23 @@ from mace.cli.run_train import _build_train_loader_and_sampler
 train_tools = importlib.import_module("mace.tools.train")
 
 
+def test_training_parser_accepts_edge_profile_controls():
+    parser = tools.build_default_arg_parser()
+    args = parser.parse_args(
+        [
+            "--name",
+            "edge-profile-test",
+            "--batch_sampling",
+            "shard_window_atom_edge_balanced",
+            "--lmdb_cost_profile",
+            "/cost/profile",
+        ]
+    )
+
+    assert args.batch_sampling == "shard_window_atom_edge_balanced"
+    assert args.lmdb_cost_profile == "/cost/profile"
+
+
 def test_native_omat_root_is_routed_without_ase_probe(tmp_path):
     family = tmp_path / "family"
     family.mkdir()
@@ -61,7 +78,7 @@ def test_split_input_paths_accepts_native_validation_root(tmp_path):
 
 def write_native_dataset(tmp_path, rows=4):
     family = tmp_path / "family"
-    family.mkdir()
+    family.mkdir(parents=True)
     shard = family / "db_0.aselmdb"
     environment = lmdb.open(str(shard), subdir=False, map_size=16 << 20)
     with environment.begin(write=True) as transaction:
@@ -80,6 +97,8 @@ def write_native_dataset(tmp_path, rows=4):
             )
     environment.close()
     np.savez(family / "metadata_db_0.npz", natoms=np.ones(rows, dtype=np.int64))
+    discovered = data.build_omat_shard_index(tmp_path)
+    data.write_omat_manifest(tmp_path, discovered, dataset_id="OMat24-training-test")
     return data.OMatLMDBDataset(
         tmp_path,
         r_max=1.5,
@@ -94,6 +113,8 @@ def training_args(**overrides):
         "batch_size": 2,
         "seed": 17,
         "lmdb_shard_window": 2,
+        "lmdb_backend": "omat_direct",
+        "lmdb_cost_profile": None,
         "distributed": False,
         "lbfgs": False,
         "data_aug_magmom": False,
@@ -102,6 +123,21 @@ def training_args(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def write_edge_profile(tmp_path, dataset):
+    profile_root = tmp_path / "edge-costs"
+    for shard_index in range(len(dataset.shard_index.shards)):
+        data.generate_cost_shard(
+            dataset.shard_index,
+            profile_root,
+            cutoff=dataset.r_max,
+            shard_index=shard_index,
+        )
+    data.finalize_cost_profile(
+        dataset.shard_index, profile_root, cutoff=dataset.r_max
+    )
+    return profile_root
 
 
 @pytest.mark.parametrize("distributed,world_size,rank", [(False, 1, 0), (True, 2, 1)])
@@ -123,6 +159,60 @@ def test_balanced_native_loader_uses_fixed_structure_batch_sampler(
     assert train_loader.batch_sampler is train_sampler
     assert train_loader.batch_size is None
     assert all(batch.num_graphs == args.batch_size for batch in train_loader)
+    dataset.close()
+
+
+def test_edge_balanced_native_loader_associates_profile_before_construction(tmp_path):
+    dataset = write_native_dataset(tmp_path / "dataset", rows=8)
+    profile = write_edge_profile(tmp_path, dataset)
+    args = training_args(
+        batch_sampling="shard_window_atom_edge_balanced",
+        lmdb_cost_profile=str(profile),
+    )
+
+    train_set, train_loader, train_sampler = _build_train_loader_and_sampler(
+        {"Default": dataset}, ["Default"], args, world_size=2, rank=1
+    )
+
+    assert train_set is dataset
+    assert isinstance(train_sampler, data.ShardWindowAtomEdgeBalancedBatchSampler)
+    assert train_loader.batch_sampler is train_sampler
+    assert dataset.shard_index.cost_profile.root == profile.resolve()
+    assert all(batch.num_graphs == args.batch_size for batch in train_loader)
+    dataset.close()
+
+
+@pytest.mark.parametrize(
+    "overrides,match",
+    [
+        (
+            {"batch_sampling": "shard_window_atom_edge_balanced"},
+            "requires --lmdb_cost_profile",
+        ),
+        (
+            {
+                "batch_sampling": "shard_window_atom_edge_balanced",
+                "lmdb_backend": "ase",
+                "lmdb_cost_profile": "profile",
+            },
+            "requires --lmdb_backend=omat_direct",
+        ),
+        (
+            {"lmdb_cost_profile": "profile"},
+            "only valid with --batch_sampling=shard_window_atom_edge_balanced",
+        ),
+    ],
+)
+def test_edge_sampling_rejects_missing_or_ignored_profile(tmp_path, overrides, match):
+    dataset = write_native_dataset(tmp_path / "dataset", rows=4)
+    with pytest.raises(ValueError, match=match):
+        _build_train_loader_and_sampler(
+            {"Default": dataset},
+            ["Default"],
+            training_args(**overrides),
+            world_size=1,
+            rank=0,
+        )
     dataset.close()
 
 
