@@ -73,6 +73,7 @@ def test_default_parser_critical_defaults():
     assert args.correlation == 3
     assert args.readout_correlation == 2
     assert args.num_interactions == 2
+    assert args.max_train_batches_per_epoch is None
     assert args.radial_type == "bessel"
     assert args.num_radial_basis == 8
 

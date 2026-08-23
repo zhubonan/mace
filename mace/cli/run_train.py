@@ -1236,6 +1236,7 @@ def run(args) -> None:
             data_aug_magmom=args.data_aug_magmom,
             compile_training=getattr(args, "compile_training", False),
             training_diagnostics=training_diagnostics,
+            max_train_batches_per_epoch=args.max_train_batches_per_epoch,
         )
     finally:
         if training_diagnostics is not None:

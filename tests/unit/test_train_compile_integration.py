@@ -161,6 +161,37 @@ def test_take_step_uses_forward_wrapper_but_eager_model_owns_training_state():
         assert_close(eager_shadow, candidate_shadow)
 
 
+def test_train_one_epoch_limits_optimizer_batches(monkeypatch):
+    owner = _EnergyModel()
+    optimizer = torch.optim.Adam(owner.parameters())
+    step_calls = []
+
+    def fake_take_step(**kwargs):
+        step_calls.append(kwargs)
+        return torch.tensor(0.0), {"loss": 0.0, "time": 0.0}
+
+    monkeypatch.setattr(train_tools, "take_step", fake_take_step)
+
+    train_tools.train_one_epoch(
+        model=owner,
+        loss_fn=_EnergyLoss(),
+        data_loader=[
+            _Batch(torch.tensor([float(index)])) for index in range(5)
+        ],
+        optimizer=optimizer,
+        epoch=0,
+        output_args={"forces": False, "virials": False, "stress": False},
+        max_grad_norm=None,
+        ema=None,
+        logger=_Logger(),
+        device=torch.device("cpu"),
+        distributed=False,
+        max_batches=3,
+    )
+
+    assert len(step_calls) == 3
+
+
 def test_training_conversion_disables_convolution_fusion(monkeypatch):
     calls = []
     source = object()

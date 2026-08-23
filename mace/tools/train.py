@@ -241,6 +241,7 @@ def train(
     data_aug_magmom: Optional[bool] = False,
     compile_training: bool = False,
     training_diagnostics=None,
+    max_train_batches_per_epoch: Optional[int] = None,
 ):
     if compile_training:
         if isinstance(optimizer, LBFGS):
@@ -343,6 +344,7 @@ def train(
             compile_training=compile_training,
             compiled_training_model=compiled_training_model,
             training_diagnostics=training_diagnostics,
+            max_batches=max_train_batches_per_epoch,
         )
         if distributed:
             torch.distributed.barrier()
@@ -468,6 +470,7 @@ def train_one_epoch(
     compile_training: bool = False,
     compiled_training_model: Optional[torch.nn.Module] = None,
     training_diagnostics=None,
+    max_batches: Optional[int] = None,
 ) -> Optional[torch.nn.Module]:
     model_to_train = (
         model if compile_training or distributed_model is None else distributed_model
@@ -536,6 +539,8 @@ def train_one_epoch(
             )
             compile_prefetched_batches = len(prefetched)
             batch_iterator = itertools.chain(prefetched, batch_iterator)
+        if max_batches is not None:
+            batch_iterator = itertools.islice(batch_iterator, max_batches)
 
         if training_diagnostics is None:
             for batch in batch_iterator:

@@ -1095,6 +1095,12 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         "--max_num_epochs", help="Maximum number of epochs", type=int, default=2048
     )
     parser.add_argument(
+        "--max_train_batches_per_epoch",
+        help="Optional exact optimizer-batch limit for each training epoch",
+        type=positive_int,
+        default=None,
+    )
+    parser.add_argument(
         "--patience",
         help="Maximum number of consecutive epochs of increasing loss",
         type=int,
