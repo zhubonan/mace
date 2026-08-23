@@ -62,6 +62,29 @@ def build_scale_shift_mace() -> torch.nn.Module:
     )
 
 
+def build_single_interaction_scale_shift_mace() -> torch.nn.Module:
+    return modules.ScaleShiftMACE(
+        **{
+            **COMMON_MODEL_KWARGS,
+            "max_ell": 2,
+            "interaction_cls": interaction_classes[
+                "RealAgnosticDensityResidualInteractionBlock"
+            ],
+            "interaction_cls_first": interaction_classes[
+                "RealAgnosticDensityResidualInteractionBlock"
+            ],
+            "num_interactions": 1,
+            "hidden_irreps": o3.Irreps("4x0e + 4x1o + 4x2e"),
+            "correlation": 3,
+        },
+        heads=["Default"],
+        readout_correlation=2,
+        use_last_readout_only=True,
+        atomic_inter_scale=1.0,
+        atomic_inter_shift=0.0,
+    )
+
+
 def build_atomic_dipoles_mace() -> torch.nn.Module:
     kwargs = {**COMMON_MODEL_KWARGS, "atomic_energies": None}
     return modules.AtomicDipolesMACE(**kwargs)
@@ -79,6 +102,7 @@ def build_energy_dipoles_mace() -> torch.nn.Module:
 MODEL_BUILDERS = {
     "MACE": build_mace,
     "ScaleShiftMACE": build_scale_shift_mace,
+    "SingleInteractionScaleShiftMACE": build_single_interaction_scale_shift_mace,
     "AtomicDipolesMACE": build_atomic_dipoles_mace,
     "AtomicDielectricMACE": build_atomic_dielectric_mace,
     "EnergyDipolesMACE": build_energy_dipoles_mace,

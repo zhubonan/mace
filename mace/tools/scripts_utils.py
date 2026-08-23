@@ -952,6 +952,9 @@ def get_params_options(
             logging.info("Freezing product weights")
             lr_params_factors["products_lr_factor"] = 0.0
             freeze_module(model.products, True)
+            readout_products = getattr(model, "readout_products", None)
+            if readout_products is not None:
+                freeze_module(readout_products, True)
         if args.freeze >= 5:
             logging.info("Freezing interaction linear weights")
             lr_params_factors["interactions_lr_factor"] = 0.0
@@ -998,6 +1001,19 @@ def get_params_options(
         amsgrad=args.amsgrad,
         betas=(args.beta, 0.999),
     )
+    readout_products = getattr(model, "readout_products", None)
+    if readout_products is not None:
+        readout_product_parameters = list(readout_products.parameters())
+        if readout_product_parameters:
+            param_options["params"].append(
+                {
+                    "name": "readout_products",
+                    "params": readout_product_parameters,
+                    "weight_decay": args.weight_decay,
+                    "lr": lr_params_factors.get("products_lr_factor", 1.0)
+                    * args.lr,
+                }
+            )
     # Optional submodules that only exist on some model classes (joint
     # embeddings, MACELES, PolarMACE). Each gets its own named group so that
     # every trainable parameter is registered explicitly; weight decay stays
