@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 from ase import Atoms
-from e3nn import o3
+from e3nn import get_optimization_defaults, o3, set_optimization_defaults
 
 from mace import data, modules, tools
 from mace.cli import convert_cueq_e3nn, convert_e3nn_cueq
@@ -121,3 +121,45 @@ def test_conversion_round_trip_preserves_invariant_readout_contraction():
     for key in ("energy", "forces"):
         torch.testing.assert_close(cueq_output[key], expected[key])
         torch.testing.assert_close(actual[key], expected[key])
+
+
+def test_cueq_to_e3nn_result_is_pickleable_in_script_jit_mode(tmp_path):
+    defaults = get_optimization_defaults()
+    if "jit_mode" not in defaults:
+        pytest.skip("e3nn release does not expose jit_mode")
+
+    source = modules.ScaleShiftMACE(
+        r_max=5.0,
+        num_bessel=4,
+        num_polynomial_cutoff=3,
+        max_ell=2,
+        interaction_cls=modules.RealAgnosticDensityResidualInteractionBlock,
+        interaction_cls_first=modules.RealAgnosticDensityResidualInteractionBlock,
+        num_interactions=1,
+        num_elements=2,
+        hidden_irreps=o3.Irreps("4x0e + 4x1o + 4x2e"),
+        MLP_irreps=o3.Irreps("4x0e"),
+        gate=torch.nn.functional.silu,
+        atomic_energies=np.zeros(2),
+        avg_num_neighbors=3.0,
+        atomic_numbers=[1, 8],
+        correlation=2,
+        readout_correlation=2,
+        use_last_readout_only=True,
+        atomic_inter_scale=1.0,
+        atomic_inter_shift=0.0,
+    )
+    cueq_model = convert_e3nn_cueq.run(
+        source, device="cpu", return_model=True, conv_fusion=False
+    )
+
+    try:
+        set_optimization_defaults(jit_mode="script")
+        round_trip = convert_cueq_e3nn.run(
+            cueq_model, device="cpu", return_model=True
+        )
+
+        assert get_optimization_defaults()["jit_mode"] == "script"
+        torch.save(round_trip, tmp_path / "round-trip.model")
+    finally:
+        set_optimization_defaults(jit_mode=defaults["jit_mode"])

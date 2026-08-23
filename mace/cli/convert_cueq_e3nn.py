@@ -1,11 +1,12 @@
 import argparse
 import logging
 import os
+from contextlib import contextmanager
 from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import torch
-from e3nn import o3
+from e3nn import get_optimization_defaults, o3, set_optimization_defaults
 
 from mace.tools.cg import O3_e3nn
 from mace.tools.cg_cueq_tools import symmetric_contraction_proj
@@ -20,6 +21,23 @@ except (ImportError, ModuleNotFoundError):
     cue = None
 
 SizeLike = Union[torch.Size, List[int]]
+
+
+@contextmanager
+def eager_e3nn_construction():
+    """Build a pickleable model without changing the caller's JIT mode."""
+
+    defaults = get_optimization_defaults()
+    jit_mode = defaults.get("jit_mode")
+    if jit_mode is None:
+        yield
+        return
+
+    set_optimization_defaults(jit_mode="eager")
+    try:
+        yield
+    finally:
+        set_optimization_defaults(jit_mode=jit_mode)
 
 
 def shapes_match_up_to_unsqueeze(a: SizeLike, b: SizeLike) -> bool:
@@ -273,7 +291,8 @@ def run(input_model, output_model="_e3nn.model", device="cpu", return_model=True
 
     # Create new model without CuEq config
     logging.info("Creating new model without CuEq settings")
-    target_model = source_model.__class__(**config)
+    with eager_e3nn_construction():
+        target_model = source_model.__class__(**config)
 
     # Transfer weights with proper remapping
     num_layers = config["num_interactions"]
