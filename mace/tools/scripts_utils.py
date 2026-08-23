@@ -327,6 +327,8 @@ def extract_config_mace_model(model: torch.nn.Module) -> Dict[str, Any]:
         "distance_transform": radial_to_transform(model.radial_embedding),
         "heads": heads,
     }
+    if hasattr(model, "readout_correlation"):
+        config["readout_correlation"] = model.readout_correlation
     if model.__class__.__name__ == "MagneticScaleShiftMACE":
         config["m_max"] = model.m_max.cpu().tolist()
         config["max_m_ell"] = int(model.mag_solid_harmoics.SH.l_max())

@@ -94,6 +94,7 @@ def transfer_symmetric_contractions(
     use_reduced_cg: bool,
     keep_last_layer_irreps: bool,
     last_layer_kmax: Union[int, None] = None,
+    product_prefix: str = "products",
 ):
     """Transfer symmetric contraction weights from CuEq to E3nn format"""
     suffixes = ["_max"] + [f".{i}" for i in range(correlation - 1)]
@@ -114,7 +115,7 @@ def transfer_symmetric_contractions(
         irreps_out = o3.Irreps(
             irrep.ir for irrep in products[i].symmetric_contractions.irreps_out
         )
-        wm = source_dict[f"products.{i}.symmetric_contractions.weight"]
+        wm = source_dict[f"{product_prefix}.{i}.symmetric_contractions.weight"]
         if use_reduced_cg:
             _, proj = symmetric_contraction_proj(
                 cue.Irreps(O3_e3nn, str(irreps_in)),
@@ -128,12 +129,16 @@ def transfer_symmetric_contractions(
         splits = []
         for k in range(kmax + 1):
             for suffix in suffixes:
-                key = f"products.{i}.symmetric_contractions.contractions.{k}.weights{suffix}"
+                key = (
+                    f"{product_prefix}.{i}.symmetric_contractions."
+                    f"contractions.{k}.weights{suffix}"
+                )
                 target_shape = target_dict[key].shape
                 splits.append(target_shape[1])
                 if (
                     target_dict.get(
-                        f"products.{i}.symmetric_contractions.contractions.{k}.weights{suffix.replace('.', '_')}"
+                        f"{product_prefix}.{i}.symmetric_contractions."
+                        f"contractions.{k}.weights{suffix.replace('.', '_')}"
                         + "_zeroed",
                         False,
                     )
@@ -148,10 +153,14 @@ def transfer_symmetric_contractions(
         idx = 0
         for k in range(kmax + 1):
             for suffix in suffixes:
-                key = f"products.{i}.symmetric_contractions.contractions.{k}.weights{suffix}"
+                key = (
+                    f"{product_prefix}.{i}.symmetric_contractions."
+                    f"contractions.{k}.weights{suffix}"
+                )
                 if (
                     target_dict.get(
-                        f"products.{i}.symmetric_contractions.contractions.{k}.weights{suffix.replace('.', '_')}_zeroed",
+                        f"{product_prefix}.{i}.symmetric_contractions."
+                        f"contractions.{k}.weights{suffix.replace('.', '_')}_zeroed",
                         False,
                     )
                     and not use_reduced_cg
@@ -191,6 +200,19 @@ def transfer_weights(
         keep_last_layer_irreps,
         last_layer_kmax,
     )
+    if hasattr(target_model, "readout_products") and len(target_model.readout_products):
+        transfer_symmetric_contractions(
+            source_dict,
+            target_dict,
+            num_product_irreps,
+            target_model.readout_products,
+            getattr(target_model, "readout_correlation", 2),
+            len(target_model.readout_products),
+            use_reduced_cg,
+            False,
+            0,
+            "readout_products",
+        )
 
     # Transfer remaining matching keys
     transferred_keys = set()

@@ -94,6 +94,7 @@ def transfer_symmetric_contractions(
     use_reduced_cg: bool,
     keep_last_layer_irreps: bool,
     last_layer_kmax: Union[int, None] = None,
+    product_prefix: str = "products",
 ):
     """Transfer symmetric contraction weights"""
     suffixes = ["_max"] + [f".{i}" for i in range(correlation - 1)]
@@ -117,7 +118,8 @@ def transfer_symmetric_contractions(
             wm = torch.concatenate(
                 [
                     source_dict[
-                        f"products.{i}.symmetric_contractions.contractions.{k}.weights{j}"
+                        f"{product_prefix}.{i}.symmetric_contractions."
+                        f"contractions.{k}.weights{j}"
                     ]
                     for k in range(kmax + 1)
                     for j in suffixes
@@ -128,12 +130,14 @@ def transfer_symmetric_contractions(
             wm = torch.concatenate(
                 [
                     source_dict[
-                        f"products.{i}.symmetric_contractions.contractions.{k}.weights{j}"
+                        f"{product_prefix}.{i}.symmetric_contractions."
+                        f"contractions.{k}.weights{j}"
                     ]
                     for k in range(kmax + 1)
                     for j in suffixes
                     if not source_dict.get(
-                        f"products.{i}.symmetric_contractions.contractions.{k}.weights{j.replace('.', '_')}_zeroed",
+                        f"{product_prefix}.{i}.symmetric_contractions."
+                        f"contractions.{k}.weights{j.replace('.', '_')}_zeroed",
                         False,
                     )
                 ],
@@ -147,7 +151,7 @@ def transfer_symmetric_contractions(
             )
             proj = torch.tensor(proj, dtype=wm.dtype, device=wm.device)
             wm = torch.einsum("zau,ab->zbu", wm, proj)
-        target_dict[f"products.{i}.symmetric_contractions.weight"] = wm
+        target_dict[f"{product_prefix}.{i}.symmetric_contractions.weight"] = wm
 
 
 def transfer_weights(
@@ -178,6 +182,19 @@ def transfer_weights(
         keep_last_layer_irreps,
         last_layer_kmax,
     )
+    if hasattr(source_model, "readout_products") and len(source_model.readout_products):
+        transfer_symmetric_contractions(
+            source_dict,
+            target_dict,
+            num_product_irreps,
+            source_model.readout_products,
+            getattr(source_model, "readout_correlation", 2),
+            len(source_model.readout_products),
+            use_reduced_cg,
+            False,
+            0,
+            "readout_products",
+        )
 
     transferred_keys = set()
     remaining_keys = (

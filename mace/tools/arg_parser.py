@@ -246,6 +246,12 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         "--correlation", help="correlation order at each layer", type=int, default=3
     )
     parser.add_argument(
+        "--readout_correlation",
+        help="correlation order of the one-interaction invariant readout",
+        type=int,
+        default=2,
+    )
+    parser.add_argument(
         "--use_reduced_cg",
         help="use reduced generalized Clebsch-Gordan coefficients",
         type=str2bool,

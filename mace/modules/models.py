@@ -30,6 +30,7 @@ from .blocks import (
     RadialEmbeddingBlock,
     ScaleShiftBlock,
 )
+from .irreps_tools import reshape_irreps
 from .utils import (
     compute_dielectric_gradients,
     compute_fixed_charge_dipole,
@@ -81,6 +82,7 @@ class MACE(torch.nn.Module):
         lammps_mliap: Optional[bool] = False,
         readout_cls: Optional[Type[NonLinearReadoutBlock]] = NonLinearReadoutBlock,
         keep_last_layer_irreps: bool = False,
+        readout_correlation: int = 2,
     ):
         super().__init__()
         self.register_buffer(
@@ -105,6 +107,10 @@ class MACE(torch.nn.Module):
         self.use_so3 = use_so3
         self.use_last_readout_only = use_last_readout_only
         self.use_edge_irreps_first = use_edge_irreps_first
+        self.readout_correlation = readout_correlation
+        single_interaction_invariant_readout = (
+            num_interactions == 1 and use_last_readout_only
+        )
 
         # Embedding
         node_attr_irreps = o3.Irreps([(num_elements, (0, 1))])
@@ -167,7 +173,11 @@ class MACE(torch.nn.Module):
             radial_MLP = [64, 64, 64]
         # Interactions and readout
         self.atomic_energies_fn = AtomicEnergiesBlock(atomic_energies)
-        if num_interactions == 1 and not keep_last_layer_irreps:
+        if (
+            num_interactions == 1
+            and not keep_last_layer_irreps
+            and not single_interaction_invariant_readout
+        ):
             hidden_irreps_out = str(hidden_irreps[0])
         else:
             hidden_irreps_out = hidden_irreps
@@ -208,8 +218,40 @@ class MACE(torch.nn.Module):
         )
         self.products = torch.nn.ModuleList([prod])
 
+        self.readout_reshapes = torch.nn.ModuleList()
+        self.readout_products = torch.nn.ModuleList()
         self.readouts = torch.nn.ModuleList()
-        if not use_last_readout_only:
+        if single_interaction_invariant_readout:
+            scalar_irreps = o3.Irreps(str(hidden_irreps[0]))
+            self.readout_reshapes.append(
+                reshape_irreps(hidden_irreps_out, cueq_config=cueq_config)
+            )
+            self.readout_products.append(
+                EquivariantProductBasisBlock(
+                    node_feats_irreps=hidden_irreps_out,
+                    target_irreps=scalar_irreps,
+                    correlation=readout_correlation,
+                    num_elements=num_elements,
+                    use_sc=False,
+                    cueq_config=cueq_config,
+                    oeq_config=oeq_config,
+                    use_reduced_cg=use_reduced_cg,
+                    use_agnostic_product=use_agnostic_product,
+                )
+            )
+            assert readout_cls is not None
+            self.readouts.append(
+                readout_cls(
+                    scalar_irreps,
+                    (len(heads) * MLP_irreps).simplify(),
+                    gate,
+                    o3.Irreps(f"{len(heads)}x0e"),
+                    len(heads),
+                    cueq_config,
+                    oeq_config,
+                )
+            )
+        elif not use_last_readout_only:
             self.readouts.append(
                 LinearReadoutBlock(
                     hidden_irreps_out,
@@ -387,9 +429,20 @@ class MACE(torch.nn.Module):
 
         for i, readout in enumerate(self.readouts):
             feat_idx = -1 if len(self.readouts) == 1 else i
-            node_es = readout(node_feats_concat[feat_idx], node_heads)[
-                num_atoms_arange, node_heads
-            ]
+            readout_feats = node_feats_concat[feat_idx]
+            readout_node_attrs = data["node_attrs"]
+            if is_lammps:
+                readout_node_attrs = readout_node_attrs[: lammps_natoms[0]]
+            if hasattr(self, "readout_products"):
+                for readout_reshape, readout_product in zip(
+                    self.readout_reshapes, self.readout_products
+                ):
+                    readout_feats = readout_product(
+                        node_feats=readout_reshape(readout_feats),
+                        sc=None,
+                        node_attrs=readout_node_attrs,
+                    )
+            node_es = readout(readout_feats, node_heads)[num_atoms_arange, node_heads]
             energy = scatter_sum(node_es, data["batch"], dim=0, dim_size=num_graphs)
             energies.append(energy)
             node_energies_list.append(node_es)
@@ -567,10 +620,21 @@ class ScaleShiftMACE(MACE):
 
         for i, readout in enumerate(self.readouts):
             feat_idx = -1 if len(self.readouts) == 1 else i
+            readout_feats = node_feats_list[feat_idx]
+            readout_node_attrs = data["node_attrs"]
+            if is_lammps:
+                readout_node_attrs = readout_node_attrs[: lammps_natoms[0]]
+            if hasattr(self, "readout_products"):
+                for readout_reshape, readout_product in zip(
+                    self.readout_reshapes, self.readout_products
+                ):
+                    readout_feats = readout_product(
+                        node_feats=readout_reshape(readout_feats),
+                        sc=None,
+                        node_attrs=readout_node_attrs,
+                    )
             node_es_list.append(
-                readout(node_feats_list[feat_idx], node_heads)[
-                    num_atoms_arange, node_heads
-                ]
+                readout(readout_feats, node_heads)[num_atoms_arange, node_heads]
             )
 
         node_feats_out = torch.cat(node_feats_list, dim=-1)

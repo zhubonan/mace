@@ -1,7 +1,12 @@
+import numpy as np
 import pytest
 import torch
+from ase import Atoms
+from e3nn import o3
 
-from mace.cli import convert_e3nn_cueq
+from mace import data, modules, tools
+from mace.cli import convert_cueq_e3nn, convert_e3nn_cueq
+from mace.tools import torch_geometric
 
 
 class _HiddenIrrepsStub:
@@ -49,3 +54,70 @@ def test_conversion_selects_requested_convolution_fusion(
     )
 
     assert converted.cueq_config.conv_fusion is expected
+
+
+def test_conversion_round_trip_preserves_invariant_readout_contraction():
+    torch.manual_seed(19)
+    source = modules.ScaleShiftMACE(
+        r_max=5.0,
+        num_bessel=4,
+        num_polynomial_cutoff=3,
+        max_ell=2,
+        interaction_cls=modules.RealAgnosticDensityResidualInteractionBlock,
+        interaction_cls_first=modules.RealAgnosticDensityResidualInteractionBlock,
+        num_interactions=1,
+        num_elements=2,
+        hidden_irreps=o3.Irreps("4x0e + 4x1o + 4x2e"),
+        MLP_irreps=o3.Irreps("4x0e"),
+        gate=torch.nn.functional.silu,
+        atomic_energies=np.zeros(2),
+        avg_num_neighbors=3.0,
+        atomic_numbers=[1, 8],
+        correlation=2,
+        readout_correlation=2,
+        use_last_readout_only=True,
+        atomic_inter_scale=1.0,
+        atomic_inter_shift=0.0,
+    )
+
+    cueq_model = convert_e3nn_cueq.run(
+        source, device="cpu", return_model=True, conv_fusion=False
+    )
+    round_trip = convert_cueq_e3nn.run(
+        cueq_model, device="cpu", return_model=True
+    )
+
+    source_state = source.state_dict()
+    round_trip_state = round_trip.state_dict()
+    readout_keys = [
+        key
+        for key in source_state
+        if key.startswith("readout_products.0.symmetric_contractions")
+    ]
+    assert readout_keys
+    for key in readout_keys:
+        torch.testing.assert_close(source_state[key], round_trip_state[key])
+
+    atoms = Atoms(
+        numbers=[8, 1, 1],
+        positions=[[0.0, 0.0, 0.0], [0.8, 0.0, 0.0], [0.0, 0.9, 0.1]],
+    )
+    atomic_data = data.AtomicData.from_config(
+        data.config_from_atoms(atoms),
+        z_table=tools.AtomicNumberTable([1, 8]),
+        cutoff=5.0,
+    )
+    batch = next(
+        iter(
+            torch_geometric.dataloader.DataLoader(
+                [atomic_data], batch_size=1, shuffle=False
+            )
+        )
+    ).to_dict()
+    expected = source(batch, training=False, compute_force=True)
+    cueq_output = cueq_model(batch, training=False, compute_force=True)
+    actual = round_trip(batch, training=False, compute_force=True)
+
+    for key in ("energy", "forces"):
+        torch.testing.assert_close(cueq_output[key], expected[key])
+        torch.testing.assert_close(actual[key], expected[key])

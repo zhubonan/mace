@@ -93,6 +93,38 @@ def _create_model(device: str = "cpu", enable_cueq: bool = False) -> torch.nn.Mo
     return model.to(device)
 
 
+def _create_single_interaction_model(
+    interaction_first: str,
+) -> torch.nn.Module:
+    torch_geometric.seed_everything(1702)
+    with mace_compile.disable_e3nn_codegen():
+        model = modules.ScaleShiftMACE(
+            r_max=_CUTOFF,
+            num_bessel=4,
+            num_polynomial_cutoff=4,
+            max_ell=3,
+            interaction_cls=modules.interaction_classes[
+                "RealAgnosticDensityResidualInteractionBlock"
+            ],
+            interaction_cls_first=modules.interaction_classes[interaction_first],
+            num_interactions=1,
+            num_elements=1,
+            hidden_irreps=o3.Irreps("4x0e + 4x1o + 4x2e"),
+            MLP_irreps=o3.Irreps("4x0e"),
+            gate=F.silu,
+            atomic_energies=np.array([1.0], dtype=float),
+            avg_num_neighbors=8,
+            atomic_numbers=_TABLE.zs,
+            correlation=3,
+            readout_correlation=2,
+            radial_type="bessel",
+            use_last_readout_only=True,
+            atomic_inter_scale=1.0,
+            atomic_inter_shift=0.0,
+        )
+    return model
+
+
 def _create_batch(num_graphs: int = 2) -> dict[str, torch.Tensor]:
     atoms = build.bulk("C", "diamond", a=3.567, cubic=True)
     configs = [data.config_from_atoms(atoms) for _ in range(num_graphs)]
@@ -685,6 +717,60 @@ def test_make_training_fx_does_not_mutate_source_model():
         }
         for name, value in model.state_dict().items():
             assert_close(value, state_before[name])
+
+
+@pytest.mark.parametrize(
+    "interaction_first",
+    (
+        "RealAgnosticDensityResidualInteractionBlock",
+        "RealAgnosticDensityInteractionBlock",
+    ),
+)
+def test_single_interaction_invariant_readout_lowers_for_training(
+    interaction_first,
+):
+    with tools.torch_tools.default_dtype(torch.float64):
+        eager_model = _create_single_interaction_model(interaction_first)
+        candidate_model = _create_single_interaction_model(interaction_first)
+        eager_batch = _create_batch(num_graphs=2)
+        candidate_batch = {
+            key: value.clone() for key, value in eager_batch.items()
+        }
+        output_args = {
+            "energy": True,
+            "forces": True,
+            "virials": True,
+            "stress": True,
+        }
+
+        fx_model = compile_training.make_training_fx(
+            candidate_model,
+            candidate_batch,
+            output_args=output_args,
+            validation_batch=_create_batch(num_graphs=3),
+        )
+        eager_outputs = eager_model(
+            eager_batch,
+            training=True,
+            compute_force=True,
+            compute_virials=True,
+            compute_stress=True,
+        )
+        candidate_outputs = _run_training_fx(
+            fx_model,
+            candidate_model,
+            candidate_batch,
+            output_args,
+        )
+
+        assert fx_model.meta["mace_output_keys"] == (
+            "energy",
+            "forces",
+            "virials",
+            "stress",
+        )
+        for key in fx_model.meta["mace_output_keys"]:
+            assert_close(eager_outputs[key], candidate_outputs[key])
 
 
 def test_training_fx_accepts_two_different_symbolic_shapes():

@@ -280,6 +280,7 @@ def _build_model(
         if args.interaction_first not in [
             "RealAgnosticInteractionBlock",
             "RealAgnosticDensityInteractionBlock",
+            "RealAgnosticDensityResidualInteractionBlock",
             "RealAgnosticResidualNonLinearInteractionBlock",
         ]:
             args.interaction_first = "RealAgnosticInteractionBlock"
@@ -300,6 +301,7 @@ def _build_model(
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
             use_agnostic_product=args.use_agnostic_product,
+            readout_correlation=args.readout_correlation,
         )
     if args.model == "ScaleShiftMACE":
         return modules.ScaleShiftMACE(
@@ -319,6 +321,7 @@ def _build_model(
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
             use_agnostic_product=args.use_agnostic_product,
+            readout_correlation=args.readout_correlation,
         )
     if args.model == "PolarMACE" and model_config_foundation is not None:
         return modules.PolarMACE(**model_config_foundation)

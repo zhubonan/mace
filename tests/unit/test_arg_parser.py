@@ -71,6 +71,7 @@ def test_default_parser_critical_defaults():
     assert args.model == "MACE"
     assert args.r_max == 5.0
     assert args.correlation == 3
+    assert args.readout_correlation == 2
     assert args.num_interactions == 2
     assert args.radial_type == "bessel"
     assert args.num_radial_basis == 8
