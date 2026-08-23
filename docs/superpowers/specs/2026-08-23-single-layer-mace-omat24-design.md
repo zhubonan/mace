@@ -6,7 +6,7 @@ Approved design. This document defines the model architecture, framework integra
 
 ## Objective
 
-Train two controlled MACE variants from scratch on full OMat24. Both use exactly one neighbor-message-passing interaction, 128 channels, hidden angular momentum through `L=2`, local contraction of the retained equivariant features, and a nonlinear scalar energy readout. One variant includes a first-layer self-connection and the other omits it. Qualify both locally on one GPU, then run both as separate four-GPU Cata trainings and compare them pairwise and with the established MACE-OMAT-0 retrain.
+Train two controlled MACE variants from scratch on full OMat24. Both use exactly one neighbor-message-passing interaction, 128 channels, hidden angular momentum through `L=2`, local contraction of the retained equivariant features, and a nonlinear scalar energy readout. One variant includes a first-layer self-connection and the other omits it. Qualify both locally on one GPU, then begin both as separate two-GPU Cata trainings and compare them pairwise and with the established MACE-OMAT-0 retrain.
 
 ## Feasibility Verdict
 
@@ -90,11 +90,11 @@ Select the worker count with the highest stable end-to-end throughput, not merel
 
 ### Cata qualification
 
-Recheck loader workers and batch size under Cata's shared filesystem, CPU allocation, and four-rank DDP conditions because the local worker result is only a starting point. Use production-shaped batches, per-rank cache isolation, atom/edge-balanced batching, and the established compiled-DDP gate. Qualify both interaction variants. Fix a common production worker count, per-rank batch size, and scheduler resource shape whenever both variants support it; any required difference must be measured and recorded.
+Recheck loader workers and batch size under Cata's shared filesystem, CPU allocation, and two-rank DDP conditions because the local worker result is only a starting point. Use production-shaped batches, per-rank cache isolation, atom/edge-balanced batching, and the established compiled-DDP gate. Qualify both interaction variants. Fix a common production worker count, per-rank batch size, and scheduler resource shape whenever both variants support it; any required difference must be measured and recorded.
 
 ### Full OMat24 run
 
-Start two separate Cata production runs from fresh random initializations with the same recorded seed; do not resume either local checkpoint. One run uses `RealAgnosticDensityResidualInteractionBlock` and the other uses `RealAgnosticDensityInteractionBlock`. Each run uses four GPUs and the same official native OMat LMDB corpus, sampler seed/order, train/validation/test identities, and optimization protocol. If only four GPUs are available, schedule the runs sequentially rather than changing either run to two-GPU training. Preserve the retrain's 89-element E0 values, `avg_num_neighbors=61.964672446250916`, `mean=0`, `std=0.7735790334431056`, `r_max=6`, loss weights, optimizer, scheduler, and evaluation definitions unless a measured stability issue requires an explicitly recorded deviation.
+Start two separate Cata production runs from fresh random initializations with the same recorded seed; do not resume either local checkpoint. One run uses `RealAgnosticDensityResidualInteractionBlock` and the other uses `RealAgnosticDensityInteractionBlock`. Each initial run uses two GPUs and the same official native OMat LMDB corpus, sampler seed/order, train/validation/test identities, and optimization protocol. With four GPUs available, the two jobs may run concurrently after both pass qualification. Preserve the retrain's 89-element E0 values, `avg_num_neighbors=61.964672446250916`, `mean=0`, `std=0.7735790334431056`, `r_max=6`, loss weights, optimizer, scheduler, and evaluation definitions unless a measured stability issue requires an explicitly recorded deviation. Scaling either job beyond two GPUs is a later measured decision, not part of the initial launch.
 
 Use the retrain's restartable checkpoint protocol and maximum ten-epoch envelope for both runs. Report comparisons at matched optimizer updates and completed epoch fractions so differing throughput does not distort the scientific comparison. Both are full from-scratch runs; no subset accuracy pilot or additional architecture ablation is required.
 
@@ -118,7 +118,7 @@ Retaining 128 channels through `L=2` and differentiating a correlation-2 readout
 
 ### Doubled production cost
 
-Training both self-path variants doubles the planned full-run GPU allocation relative to a single architecture. Mitigation is to use the same qualified four-GPU resource shape for both, preserve restartable stages, schedule sequentially when only four GPUs are available, and avoid unrelated ablations.
+Training both self-path variants doubles the planned full-run allocation relative to a single architecture. Mitigation is to use the same qualified two-GPU resource shape for both, preserve restartable stages, run concurrently on the four available GPUs when the scheduler permits, and avoid unrelated ablations.
 
 ### I/O starvation
 
@@ -142,4 +142,4 @@ The current `model=MACE` factory silently replaces unsupported first-interaction
 
 ## Approval Summary
 
-The user approved the retained `L=0,1,2` first-layer representation, local correlation-2 invariant contraction, nonlinear scalar readout, controlled with/without-self comparison, local single-GPU qualification, `num_workers=1,4,8` sweep, and two subsequent four-GPU Cata full runs.
+The user approved the retained `L=0,1,2` first-layer representation, local correlation-2 invariant contraction, nonlinear scalar readout, controlled with/without-self comparison, local single-GPU qualification, `num_workers=1,4,8` sweep, and two subsequent two-GPU Cata full runs.
