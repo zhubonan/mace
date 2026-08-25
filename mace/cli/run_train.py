@@ -122,6 +122,14 @@ def _split_input_paths(lmdb_backend, paths):
     )
 
 
+def _data_loader_worker_kwargs(num_workers: int) -> dict:
+    """Return worker settings that avoid forking a CUDA-initialized trainer."""
+    worker_kwargs = {"num_workers": num_workers}
+    if num_workers > 0:
+        worker_kwargs["multiprocessing_context"] = "spawn"
+    return worker_kwargs
+
+
 def _configure_model_for_training(args, *configure_args):
     construction_context = (
         mace_compile.disable_e3nn_codegen()
@@ -222,8 +230,8 @@ def _build_train_loader_and_sampler(
             dataset=native_dataset,
             batch_sampler=train_sampler,
             pin_memory=args.pin_memory,
-            num_workers=args.num_workers,
             generator=torch.Generator().manual_seed(args.seed),
+            **_data_loader_worker_kwargs(args.num_workers),
         )
         return native_dataset, train_loader, train_sampler
 
@@ -245,8 +253,8 @@ def _build_train_loader_and_sampler(
         shuffle=(train_sampler is None),
         drop_last=(train_sampler is None and not args.lbfgs),
         pin_memory=args.pin_memory,
-        num_workers=args.num_workers,
         generator=torch.Generator().manual_seed(args.seed),
+        **_data_loader_worker_kwargs(args.num_workers),
     )
     return train_set, train_loader, train_sampler
 
@@ -925,8 +933,8 @@ def run(args) -> None:
                 shuffle=True,
                 drop_last=(not args.lbfgs),
                 pin_memory=args.pin_memory,
-                num_workers=args.num_workers,
                 generator=torch.Generator().manual_seed(args.seed),
+                **_data_loader_worker_kwargs(args.num_workers),
             )
             head_config.train_loader = train_loader_head
 
@@ -967,8 +975,8 @@ def run(args) -> None:
             shuffle=False,
             drop_last=False,
             pin_memory=args.pin_memory,
-            num_workers=args.num_workers,
             generator=torch.Generator().manual_seed(args.seed),
+            **_data_loader_worker_kwargs(args.num_workers),
         )
 
     loss_fn = get_loss_fn(args, dipole_only, args.compute_dipole)
@@ -1316,8 +1324,8 @@ def run(args) -> None:
                 batch_size=args.valid_batch_size,
                 shuffle=(test_sampler is None),
                 drop_last=drop_last,
-                num_workers=args.num_workers,
                 pin_memory=args.pin_memory,
+                **_data_loader_worker_kwargs(args.num_workers),
             )
             test_data_loader[test_name] = test_loader
         if stop_first_test:

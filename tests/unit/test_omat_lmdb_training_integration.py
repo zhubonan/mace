@@ -158,6 +158,19 @@ def test_balanced_native_loader_uses_fixed_structure_batch_sampler(
     dataset.close()
 
 
+def test_balanced_native_loader_uses_spawn_workers(tmp_path):
+    dataset = write_native_dataset(tmp_path, rows=8)
+    args = training_args(num_workers=1)
+
+    _, train_loader, _ = _build_train_loader_and_sampler(
+        {"Default": dataset}, ["Default"], args, world_size=1, rank=0
+    )
+
+    assert train_loader.multiprocessing_context is not None
+    assert train_loader.multiprocessing_context.get_start_method() == "spawn"
+    dataset.close()
+
+
 def test_edge_balanced_native_loader_associates_profile_before_construction(tmp_path):
     dataset = write_native_dataset(tmp_path / "dataset", rows=8)
     profile = write_edge_profile(tmp_path, dataset)
