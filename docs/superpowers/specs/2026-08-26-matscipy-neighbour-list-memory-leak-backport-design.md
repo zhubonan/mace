@@ -75,13 +75,14 @@ wheel hash and is never mutated after qualification.
 
 ### RED: stock dependency
 
-Create a standalone allocator regression using an ASE-built periodic crystal
-and repeated real `neighbour_list("ijS")` calls. After allocator warm-up, fit
-`mallinfo2().uordblks` versus calls and assert a strict bounded-growth limit.
-Run it first against the stock matscipy 1.2.0 runtime and require it to fail for
-the measured positive slope. The acceptance limit is the same
-`0.02 GiB/10k calls` used by the real-OMat test. Preserve the failing result as
-the RED artifact.
+Create a standalone allocator regression using an ASE-built periodic crystal.
+Treat one probe batch as 256 real `neighbour_list("ijS")` calls so its slope is
+normalized identically to the production batch-256 OMat probe. After allocator
+warm-up, fit `mallinfo2().uordblks` versus batches and assert a strict
+bounded-growth limit. Run it first against the stock matscipy 1.2.0 runtime and
+require it to fail for the measured positive slope. The acceptance limit is the
+same `0.02 GiB/10k batches` used by the real-OMat test. Preserve the failing
+result as the RED artifact.
 
 Also run the existing 10,000-batch real-OMat neighbour-only probe against stock
 1.2.0 as the full-workload RED reference; the already verified value is
