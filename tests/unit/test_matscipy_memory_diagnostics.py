@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -275,16 +276,90 @@ def test_backport_verifier_rejects_added_source_path(tmp_path: Path) -> None:
         module.verify_source_tree(source)
 
 
+def test_backport_verifier_rejects_nested_git_path(tmp_path: Path) -> None:
+    module = _load(
+        "verify_matscipy_backport_nested_git",
+        "scripts/diagnostics/verify_matscipy_backport.py",
+    )
+    source = _make_pristine_source_fixture(tmp_path, module)
+    _apply_expected_free_dims(source / "c/tools.c")
+    nested_git = source / "matscipy/.git"
+    nested_git.mkdir()
+    (nested_git / "config").write_text("unexpected\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected source paths"):
+        module.verify_source_tree(source)
+
+
+def test_backport_report_records_committed_patch_hash(tmp_path: Path) -> None:
+    module = _load(
+        "verify_matscipy_backport_patch_hash",
+        "scripts/diagnostics/verify_matscipy_backport.py",
+    )
+    source = _make_pristine_source_fixture(tmp_path, module)
+    _apply_expected_free_dims(source / "c/tools.c")
+
+    report = module.verify_source_tree(source)
+
+    patch_path = ROOT / "patches/matscipy/1.2.0-free-resize-dims.patch"
+    assert report["patch_sha256"] == module.sha256(patch_path)
+
+
+def test_backport_verifier_rejects_wrong_patch_hash(tmp_path: Path) -> None:
+    module = _load(
+        "verify_matscipy_backport_wrong_patch",
+        "scripts/diagnostics/verify_matscipy_backport.py",
+    )
+    source = _make_pristine_source_fixture(tmp_path, module)
+    _apply_expected_free_dims(source / "c/tools.c")
+    wrong_patch = tmp_path / "wrong.patch"
+    wrong_patch.write_text("not the committed patch\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="patch SHA-256 mismatch"):
+        module.verify_source_tree(source, wrong_patch)
+
+
+def test_committed_patch_applies_with_zero_fuzz(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    (source / "c").mkdir(parents=True)
+    (source / "c/tools.c").write_text(
+        """void *resize_array(PyObject *py_arr, npy_intp newsize)
+{
+    PyObject *retval;
+    retval = PyArray_Resize((PyArrayObject *) py_arr, &newshape, 1, NPY_CORDER);
+    if (!retval)  return NULL;
+    Py_DECREF(retval);
+
+    return PyArray_DATA((PyArrayObject *) py_arr);
+}
+""",
+        encoding="utf-8",
+    )
+    patch_path = ROOT / "patches/matscipy/1.2.0-free-resize-dims.patch"
+
+    completed = subprocess.run(
+        ["patch", "--dry-run", "--fuzz=0", "-p1", "-i", str(patch_path)],
+        cwd=source,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_committed_patch_is_the_exact_upstream_one_line() -> None:
     patch_path = ROOT / "patches/matscipy/1.2.0-free-resize-dims.patch"
 
     assert patch_path.read_text(encoding="utf-8") == """diff --git a/c/tools.c b/c/tools.c
 --- a/c/tools.c
 +++ b/c/tools.c
-@@ -89,6 +89,7 @@ resize_array(PyObject *py_arr, npy_intp newsize)
+@@ -83,6 +83,7 @@ resize_array(PyObject *py_arr, npy_intp newsize)
      PyObject *retval;
      retval = PyArray_Resize((PyArrayObject *) py_arr, &newshape, 1, NPY_CORDER);
 +    free(dims);
      if (!retval)  return NULL;
      Py_DECREF(retval);
+
+     return PyArray_DATA((PyArrayObject *) py_arr);
 """

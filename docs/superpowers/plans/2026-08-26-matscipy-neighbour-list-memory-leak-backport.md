@@ -447,12 +447,14 @@ Run the focused test and expect import failure because the verifier does not exi
 diff --git a/c/tools.c b/c/tools.c
 --- a/c/tools.c
 +++ b/c/tools.c
-@@ -89,6 +89,7 @@ resize_array(PyObject *py_arr, npy_intp newsize)
+@@ -83,6 +83,7 @@ resize_array(PyObject *py_arr, npy_intp newsize)
      PyObject *retval;
      retval = PyArray_Resize((PyArrayObject *) py_arr, &newshape, 1, NPY_CORDER);
 +    free(dims);
      if (!retval)  return NULL;
      Py_DECREF(retval);
+
+     return PyArray_DATA((PyArrayObject *) py_arr);
 ```
 
 - [ ] **Step 3: Implement exact source verification.**

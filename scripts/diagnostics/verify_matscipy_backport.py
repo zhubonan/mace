@@ -14,6 +14,10 @@ EXPECTED_TOOLS_SHA256 = (
 )
 UPSTREAM_COMMIT = "db167a0925a687ea4ebe5785d007cc5a4cc6241f"
 EXPECTED_INSERTION = "    free(dims);"
+PATCH_FILENAME = "1.2.0-free-resize-dims.patch"
+EXPECTED_PATCH_SHA256 = (
+    "f46992c455a01ee1d3ffb069218418e377c9564705d3e5fd4b22a8fc94bfc8b3"
+)
 RESIZE_CALL = (
     "    retval = PyArray_Resize((PyArrayObject *) py_arr, "
     "&newshape, 1, NPY_CORDER);"
@@ -51,13 +55,15 @@ def compare_manifest(manifest_path: Path, source_root: Path) -> list[str]:
     """Return changed paths and reject missing or newly added source files."""
 
     expected = _manifest_entries(manifest_path)
-    observed = {
-        path.relative_to(source_root).as_posix()
-        for path in source_root.rglob("*")
-        if path.is_file()
-        and ".git" not in path.relative_to(source_root).parts
-        and path.relative_to(source_root).as_posix() not in IGNORED_PATHS
-    }
+    observed: set[str] = set()
+    for path in source_root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source_root)
+        relative_string = relative.as_posix()
+        if relative.parts[0] == ".git" or relative_string in IGNORED_PATHS:
+            continue
+        observed.add(relative_string)
     if observed != set(expected):
         raise ValueError(
             "unexpected source paths: "
@@ -81,16 +87,32 @@ def _expected_patched_tools(pristine_text: str) -> str:
     )
 
 
-def verify_source_tree(source_root: Path) -> dict[str, object]:
+def _default_patch_path() -> Path:
+    sibling = Path(__file__).resolve().with_name(PATCH_FILENAME)
+    if sibling.is_file():
+        return sibling
+    return Path(__file__).resolve().parents[2] / "patches/matscipy" / PATCH_FILENAME
+
+
+def verify_source_tree(
+    source_root: Path, patch_path: Path | None = None
+) -> dict[str, object]:
     """Require the official tools hash and only the upstream one-line delta."""
 
     source_root = source_root.resolve()
+    patch_path = (patch_path or _default_patch_path()).resolve()
     pristine = source_root / "c/tools.c.pristine"
     patched = source_root / "c/tools.c"
     manifest = source_root / "pristine-files.sha256"
-    for path in (pristine, patched, manifest):
+    for path in (pristine, patched, manifest, patch_path):
         if not path.is_file():
             raise FileNotFoundError(path)
+    patch_hash = sha256(patch_path)
+    if patch_hash != EXPECTED_PATCH_SHA256:
+        raise ValueError(
+            "patch SHA-256 mismatch: "
+            f"expected {EXPECTED_PATCH_SHA256}, got {patch_hash}"
+        )
     pristine_hash = sha256(pristine)
     if pristine_hash != EXPECTED_TOOLS_SHA256:
         raise ValueError(
@@ -111,6 +133,7 @@ def verify_source_tree(source_root: Path) -> dict[str, object]:
         "pristine_tools_sha256": pristine_hash,
         "patched_tools_sha256": sha256(patched),
         "manifest_sha256": sha256(manifest),
+        "patch_sha256": patch_hash,
         "changed_files": changed,
         "inserted_line": EXPECTED_INSERTION,
     }
@@ -130,13 +153,14 @@ def atomic_json(path: Path, payload: dict[str, object]) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, required=True)
+    parser.add_argument("--patch", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
 
 def main() -> None:
     args = _parser().parse_args()
-    report = verify_source_tree(args.source_root)
+    report = verify_source_tree(args.source_root, args.patch)
     atomic_json(args.output, report)
     print(json.dumps(report, indent=2, sort_keys=True))
 
