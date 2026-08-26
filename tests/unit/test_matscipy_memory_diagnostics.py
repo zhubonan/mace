@@ -177,3 +177,114 @@ def test_real_omat_worker_fit_normalizes_256_items_as_one_batch(
     assert fitted["heap_private_dirty_kib_gib_per_10k_batches"] == pytest.approx(
         expected
     )
+
+
+TOOLS_FIXTURE = """void *
+resize_array(PyObject *py_arr, npy_intp newsize)
+{
+    npy_intp *dims = malloc(ndim*sizeof(npy_intp));
+    PyObject *retval;
+    retval = PyArray_Resize((PyArrayObject *) py_arr, &newshape, 1, NPY_CORDER);
+    if (!retval)  return NULL;
+    Py_DECREF(retval);
+    return PyArray_DATA((PyArrayObject *) py_arr);
+}
+"""
+
+
+def _make_pristine_source_fixture(tmp_path: Path, module) -> Path:
+    source = tmp_path / "matscipy-1.2.0"
+    (source / "c").mkdir(parents=True)
+    (source / "matscipy").mkdir()
+    tools = source / "c/tools.c"
+    tools.write_text(TOOLS_FIXTURE, encoding="utf-8")
+    (source / "c/tools.c.pristine").write_text(TOOLS_FIXTURE, encoding="utf-8")
+    package = source / "matscipy/__init__.py"
+    package.write_text("VALUE = 1\n", encoding="utf-8")
+    module.EXPECTED_TOOLS_SHA256 = module.sha256(source / "c/tools.c.pristine")
+    (source / "pristine-files.sha256").write_text(
+        f"{module.sha256(tools)}  c/tools.c\n"
+        f"{module.sha256(package)}  matscipy/__init__.py\n",
+        encoding="utf-8",
+    )
+    return source
+
+
+def _apply_expected_free_dims(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(
+            "    if (!retval)  return NULL;",
+            "    free(dims);\n    if (!retval)  return NULL;",
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_backport_verifier_accepts_only_free_dims(tmp_path: Path) -> None:
+    module = _load(
+        "verify_matscipy_backport",
+        "scripts/diagnostics/verify_matscipy_backport.py",
+    )
+    source = _make_pristine_source_fixture(tmp_path, module)
+    _apply_expected_free_dims(source / "c/tools.c")
+
+    report = module.verify_source_tree(source)
+
+    assert report["changed_files"] == ["c/tools.c"]
+    assert report["inserted_line"] == "    free(dims);"
+
+
+def test_backport_verifier_rejects_extra_source_delta(tmp_path: Path) -> None:
+    module = _load(
+        "verify_matscipy_backport_extra_source",
+        "scripts/diagnostics/verify_matscipy_backport.py",
+    )
+    source = _make_pristine_source_fixture(tmp_path, module)
+    _apply_expected_free_dims(source / "c/tools.c")
+    (source / "matscipy/__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected source delta"):
+        module.verify_source_tree(source)
+
+
+def test_backport_verifier_rejects_second_native_edit(tmp_path: Path) -> None:
+    module = _load(
+        "verify_matscipy_backport_extra_native",
+        "scripts/diagnostics/verify_matscipy_backport.py",
+    )
+    source = _make_pristine_source_fixture(tmp_path, module)
+    _apply_expected_free_dims(source / "c/tools.c")
+    with (source / "c/tools.c").open("a", encoding="utf-8") as handle:
+        handle.write("/* extra change */\n")
+
+    with pytest.raises(ValueError, match="exact upstream patch"):
+        module.verify_source_tree(source)
+
+
+def test_backport_verifier_rejects_added_source_path(tmp_path: Path) -> None:
+    module = _load(
+        "verify_matscipy_backport_added_path",
+        "scripts/diagnostics/verify_matscipy_backport.py",
+    )
+    source = _make_pristine_source_fixture(tmp_path, module)
+    _apply_expected_free_dims(source / "c/tools.c")
+    (source / "matscipy/extra.py").write_text("VALUE = 3\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected source paths"):
+        module.verify_source_tree(source)
+
+
+def test_committed_patch_is_the_exact_upstream_one_line() -> None:
+    patch_path = ROOT / "patches/matscipy/1.2.0-free-resize-dims.patch"
+
+    assert patch_path.read_text(encoding="utf-8") == """diff --git a/c/tools.c b/c/tools.c
+--- a/c/tools.c
++++ b/c/tools.c
+@@ -89,6 +89,7 @@ resize_array(PyObject *py_arr, npy_intp newsize)
+     PyObject *retval;
+     retval = PyArray_Resize((PyArrayObject *) py_arr, &newshape, 1, NPY_CORDER);
++    free(dims);
+     if (!retval)  return NULL;
+     Py_DECREF(retval);
+"""
