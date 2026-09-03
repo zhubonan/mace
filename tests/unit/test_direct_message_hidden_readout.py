@@ -18,8 +18,12 @@ def _block(rank: int = 3):
 
 def test_direct_block_output_shape_and_central_element_conditioning():
     block = _block()
-    message = torch.randn(2, 4, 16)
-    hidden = torch.randn(2, 16)
+    # Keep geometric features identical across samples so any output change
+    # is attributable to central-species conditioning via gamma/beta.
+    message_row = torch.randn(1, 4, 16)
+    hidden_row = torch.randn(1, 16)
+    message = message_row.repeat(2, 1, 1)
+    hidden = hidden_row.repeat(2, 1)
     attrs = torch.eye(2)
     with torch.no_grad():
         block.gamma[1].fill_(2.0)
@@ -27,6 +31,16 @@ def test_direct_block_output_shape_and_central_element_conditioning():
     result = block(message, hidden, attrs)
     assert result.shape == (2, 6)
     assert not torch.allclose(result[0], result[1])
+
+
+def test_direct_block_rejects_rank_zero():
+    with pytest.raises(ValueError):
+        modules.DirectMessageHiddenReadoutBlock(
+            message_irreps=o3.Irreps("4x0e + 4x1o + 4x2e + 4x3o"),
+            hidden_irreps=o3.Irreps("4x0e + 4x1o"),
+            num_elements=2,
+            rank=0,
+        )
 
 
 def test_direct_block_is_deterministic_for_identical_inputs():
