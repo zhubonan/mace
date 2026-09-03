@@ -1,3 +1,6 @@
+import inspect
+import re
+
 import pytest
 import torch
 from e3nn import o3
@@ -14,6 +17,24 @@ def _block(rank: int = 3):
         num_elements=2,
         rank=rank,
     )
+
+
+def test_direct_block_channel_projections_use_readable_matmul():
+    source = inspect.getsource(modules.DirectMessageHiddenReadoutBlock.forward)
+    compact_source = re.sub(r"\s+", "", source)
+
+    assert "[nodes, channels, irrep_dim] @ [channels, rank] -> [nodes, rank, irrep_dim]" in source
+    for features, weights in (
+        ("message_0", "self.message_weight_0"),
+        ("message_1", "self.message_weight_1"),
+        ("hidden_0", "self.hidden_weight_0"),
+        ("hidden_1", "self.hidden_weight_1"),
+    ):
+        assert (
+            f"torch.matmul({features}.transpose(1,2),{weights}.T).transpose(1,2)"
+            in compact_source
+        )
+    assert 'torch.einsum("ncd,rc->nrd"' not in source
 
 
 def test_direct_block_output_shape_and_central_element_conditioning():

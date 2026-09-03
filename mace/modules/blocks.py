@@ -211,10 +211,19 @@ class DirectMessageHiddenReadoutBlock(torch.nn.Module):
         message_1 = self._message_block(message, self.message_1_offset, 3)
         hidden_0 = self._hidden_block(hidden, self.hidden_0_offset, self.hidden_mul_0, 1)
         hidden_1 = self._hidden_block(hidden, self.hidden_1_offset, self.hidden_mul_1, 3)
-        message_rank_0 = torch.einsum("ncd,rc->nrd", message_0, self.message_weight_0)
-        message_rank_1 = torch.einsum("ncd,rc->nrd", message_1, self.message_weight_1)
-        hidden_rank_0 = torch.einsum("ncd,rc->nrd", hidden_0, self.hidden_weight_0)
-        hidden_rank_1 = torch.einsum("ncd,rc->nrd", hidden_1, self.hidden_weight_1)
+        # [nodes, channels, irrep_dim] @ [channels, rank] -> [nodes, rank, irrep_dim]
+        message_rank_0 = torch.matmul(
+            message_0.transpose(1, 2), self.message_weight_0.T
+        ).transpose(1, 2)
+        message_rank_1 = torch.matmul(
+            message_1.transpose(1, 2), self.message_weight_1.T
+        ).transpose(1, 2)
+        hidden_rank_0 = torch.matmul(
+            hidden_0.transpose(1, 2), self.hidden_weight_0.T
+        ).transpose(1, 2)
+        hidden_rank_1 = torch.matmul(
+            hidden_1.transpose(1, 2), self.hidden_weight_1.T
+        ).transpose(1, 2)
         q0 = (message_rank_0 * hidden_rank_0).sum(dim=-1)
         q1 = (message_rank_1 * hidden_rank_1).sum(dim=-1) / math.sqrt(3.0)
         q = torch.cat([q0, q1], dim=-1)
