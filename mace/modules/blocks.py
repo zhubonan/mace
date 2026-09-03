@@ -6,6 +6,7 @@
 ###########################################################################################
 # pylint: disable=too-many-lines
 
+import math
 from abc import abstractmethod
 from typing import Any, Callable, List, Optional, Tuple, Union
 
@@ -115,6 +116,109 @@ class NonLinearReadoutBlock(torch.nn.Module):
             if self.num_heads > 1 and heads is not None:
                 x = mask_head(x, heads, self.num_heads)
         return self.linear_2(x)  # [n_nodes, len(heads)]
+
+
+@compile_mode("script")
+class DirectMessageHiddenReadoutBlock(torch.nn.Module):
+    """Element-conditioned low-rank invariants from message and hidden features."""
+
+    def __init__(
+        self,
+        message_irreps: o3.Irreps,
+        hidden_irreps: o3.Irreps,
+        num_elements: int,
+        rank: int,
+        cueq_config: Optional[CuEquivarianceConfig] = None,
+    ):
+        super().__init__()
+        if rank <= 0:
+            raise ValueError("rank must be positive")
+        self.message_irreps = o3.Irreps(message_irreps)
+        self.hidden_irreps = o3.Irreps(hidden_irreps)
+        self.ir_mul = get_layout(cueq_config) == "ir_mul"
+
+        message_offsets = [0, 0]
+        hidden_offsets = [0, 0]
+        message_muls = [0, 0]
+        hidden_muls = [0, 0]
+        message_dim_offset = 0
+        hidden_dim_offset = 0
+        for mul, ir in self.message_irreps:
+            if ir.l == 0 and ir.p == 1:
+                message_offsets[0] = message_dim_offset
+                message_muls[0] = mul
+            elif ir.l == 1 and ir.p == -1:
+                message_offsets[1] = message_dim_offset
+                message_muls[1] = mul
+            message_dim_offset += ir.dim
+        for mul, ir in self.hidden_irreps:
+            if ir.l == 0 and ir.p == 1:
+                hidden_offsets[0] = hidden_dim_offset
+                hidden_muls[0] = mul
+            elif ir.l == 1 and ir.p == -1:
+                hidden_offsets[1] = hidden_dim_offset
+                hidden_muls[1] = mul
+            hidden_dim_offset += mul * ir.dim
+
+        if message_muls[0] == 0 or message_muls[1] == 0:
+            raise ValueError("message_irreps must contain both 0e and 1o")
+        if hidden_muls[0] == 0 or hidden_muls[1] == 0:
+            raise ValueError("hidden_irreps must contain both 0e and 1o")
+        if message_muls != hidden_muls or message_muls[0] != message_muls[1]:
+            raise ValueError("message and hidden multiplicities must match")
+
+        self.message_0_offset = message_offsets[0]
+        self.message_1_offset = message_offsets[1]
+        self.hidden_0_offset = hidden_offsets[0]
+        self.hidden_1_offset = hidden_offsets[1]
+        self.message_mul_0 = message_muls[0]
+        self.message_mul_1 = message_muls[1]
+        self.hidden_mul_0 = hidden_muls[0]
+        self.hidden_mul_1 = hidden_muls[1]
+        self.rank = rank
+
+        self.message_weight_0 = torch.nn.Parameter(torch.empty(rank, message_muls[0]))
+        self.message_weight_1 = torch.nn.Parameter(torch.empty(rank, message_muls[1]))
+        self.hidden_weight_0 = torch.nn.Parameter(torch.empty(rank, hidden_muls[0]))
+        self.hidden_weight_1 = torch.nn.Parameter(torch.empty(rank, hidden_muls[1]))
+        self.gamma = torch.nn.Parameter(torch.ones(num_elements, 2 * rank))
+        self.beta = torch.nn.Parameter(torch.zeros(num_elements, 2 * rank))
+        torch.nn.init.xavier_uniform_(self.message_weight_0)
+        torch.nn.init.xavier_uniform_(self.message_weight_1)
+        torch.nn.init.xavier_uniform_(self.hidden_weight_0)
+        torch.nn.init.xavier_uniform_(self.hidden_weight_1)
+
+    def _message_block(self, message: torch.Tensor, offset: int, dim: int) -> torch.Tensor:
+        if self.ir_mul:
+            return torch.narrow(message, 1, offset, dim).transpose(1, 2)
+        return torch.narrow(message, 2, offset, dim)
+
+    def _hidden_block(
+        self, hidden: torch.Tensor, offset: int, mul: int, dim: int
+    ) -> torch.Tensor:
+        block = torch.narrow(hidden, 1, offset, mul * dim)
+        if self.ir_mul:
+            return block.reshape(hidden.shape[0], dim, mul).transpose(1, 2)
+        return block.reshape(hidden.shape[0], mul, dim)
+
+    def forward(
+        self,
+        message: torch.Tensor,
+        hidden: torch.Tensor,
+        node_attrs: torch.Tensor,
+    ) -> torch.Tensor:
+        message_0 = self._message_block(message, self.message_0_offset, 1)
+        message_1 = self._message_block(message, self.message_1_offset, 3)
+        hidden_0 = self._hidden_block(hidden, self.hidden_0_offset, self.hidden_mul_0, 1)
+        hidden_1 = self._hidden_block(hidden, self.hidden_1_offset, self.hidden_mul_1, 3)
+        message_rank_0 = torch.einsum("ncd,rc->nrd", message_0, self.message_weight_0)
+        message_rank_1 = torch.einsum("ncd,rc->nrd", message_1, self.message_weight_1)
+        hidden_rank_0 = torch.einsum("ncd,rc->nrd", hidden_0, self.hidden_weight_0)
+        hidden_rank_1 = torch.einsum("ncd,rc->nrd", hidden_1, self.hidden_weight_1)
+        q0 = (message_rank_0 * hidden_rank_0).sum(dim=-1)
+        q1 = (message_rank_1 * hidden_rank_1).sum(dim=-1) / math.sqrt(3.0)
+        q = torch.cat([q0, q1], dim=-1)
+        return q * (node_attrs @ self.gamma) + (node_attrs @ self.beta)
 
 
 @simplify_if_compile
