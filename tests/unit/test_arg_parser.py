@@ -72,6 +72,8 @@ def test_default_parser_critical_defaults():
     assert args.r_max == 5.0
     assert args.correlation == 3
     assert args.readout_correlation == 2
+    assert args.direct_message_hidden_readout is False
+    assert args.direct_readout_rank == 16
     assert args.num_interactions == 2
     assert args.max_train_batches_per_epoch is None
     assert args.radial_type == "bessel"
@@ -113,6 +115,15 @@ def test_compile_training_flag_is_opt_in():
         action for action in parser._actions if action.dest == "compile_training"
     )
     assert "distributed" in compile_action.help
+
+
+def test_direct_readout_flags_parse_custom_values():
+    args = build_default_arg_parser().parse_args(
+        MINIMAL_ARGV
+        + ["--direct_message_hidden_readout", "true", "--direct_readout_rank", "7"]
+    )
+    assert args.direct_message_hidden_readout is True
+    assert args.direct_readout_rank == 7
 
 
 def test_native_omat_lmdb_options_are_explicit():

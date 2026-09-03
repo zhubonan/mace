@@ -300,6 +300,8 @@ def _build_model(
             embedding_specs=args.embedding_specs,
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
+            direct_message_hidden_readout=getattr(args, "direct_message_hidden_readout", False),
+            direct_readout_rank=getattr(args, "direct_readout_rank", 16),
             use_agnostic_product=args.use_agnostic_product,
             readout_correlation=args.readout_correlation,
         )
@@ -320,6 +322,8 @@ def _build_model(
             embedding_specs=args.embedding_specs,
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
+            direct_message_hidden_readout=getattr(args, "direct_message_hidden_readout", False),
+            direct_readout_rank=getattr(args, "direct_readout_rank", 16),
             use_agnostic_product=args.use_agnostic_product,
             readout_correlation=args.readout_correlation,
         )
@@ -346,6 +350,8 @@ def _build_model(
             embedding_specs=args.embedding_specs,
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
+            direct_message_hidden_readout=getattr(args, "direct_message_hidden_readout", False),
+            direct_readout_rank=getattr(args, "direct_readout_rank", 16),
             use_agnostic_product=args.use_agnostic_product,
             kspace_cutoff_factor=args.kspace_cutoff_factor,
             atomic_multipoles_max_l=args.atomic_multipoles_max_l,
@@ -451,6 +457,8 @@ def _build_model(
             embedding_specs=args.embedding_specs,
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
+            direct_message_hidden_readout=getattr(args, "direct_message_hidden_readout", False),
+            direct_readout_rank=getattr(args, "direct_readout_rank", 16),
             use_agnostic_product=args.use_agnostic_product,
         )
     raise RuntimeError(f"Unknown model: '{args.model}'")

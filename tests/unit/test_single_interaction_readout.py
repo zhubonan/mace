@@ -14,7 +14,12 @@ from mace.tools.model_script_utils import _build_model as _build_model_from_args
 from mace.tools.scripts_utils import extract_config_mace_model
 
 
-def _build_model(interaction_first: str) -> modules.ScaleShiftMACE:
+def _build_model(
+    interaction_first: str,
+    *,
+    direct_message_hidden_readout: bool = False,
+    direct_readout_rank: int = 16,
+) -> modules.ScaleShiftMACE:
     return modules.ScaleShiftMACE(
         r_max=5.0,
         num_bessel=4,
@@ -34,7 +39,9 @@ def _build_model(interaction_first: str) -> modules.ScaleShiftMACE:
         atomic_numbers=[1, 8],
         correlation=3,
         readout_correlation=2,
-        use_last_readout_only=True,
+        use_last_readout_only=not direct_message_hidden_readout,
+        direct_message_hidden_readout=direct_message_hidden_readout,
+        direct_readout_rank=direct_readout_rank,
         atomic_inter_scale=1.0,
         atomic_inter_shift=0.0,
     )
@@ -133,6 +140,49 @@ def test_density_residual_variant_alone_enables_direct_self_connection():
     assert without_self.products[0].use_sc is False
 
 
+def test_direct_mode_uses_message_hidden_head_not_second_product():
+    model = _build_model(
+        "RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
+        direct_readout_rank=3,
+    )
+    assert len(model.direct_readouts) == 1
+    assert len(model.readout_products) == 0
+    assert model.readouts[0].linear_1.irreps_in == o3.Irreps("6x0e")
+
+
+def test_direct_mode_rejects_ambiguous_or_multilayer_configuration():
+    kwargs = dict(
+        r_max=5.0,
+        num_bessel=4,
+        num_polynomial_cutoff=3,
+        max_ell=2,
+        interaction_cls=modules.RealAgnosticResidualInteractionBlock,
+        interaction_cls_first=modules.RealAgnosticDensityInteractionBlock,
+        num_elements=2,
+        hidden_irreps=o3.Irreps("8x0e + 8x1o + 8x2e"),
+        MLP_irreps=o3.Irreps("4x0e"),
+        gate=torch.nn.functional.silu,
+        atomic_energies=np.zeros(2),
+        avg_num_neighbors=3.0,
+        atomic_numbers=[1, 8],
+        correlation=3,
+        atomic_inter_scale=1.0,
+        atomic_inter_shift=0.0,
+    )
+    with pytest.raises(ValueError, match="num_interactions == 1"):
+        modules.ScaleShiftMACE(
+            **kwargs, num_interactions=2, direct_message_hidden_readout=True
+        )
+    with pytest.raises(ValueError, match="use_last_readout_only"):
+        modules.ScaleShiftMACE(
+            **kwargs,
+            num_interactions=1,
+            use_last_readout_only=True,
+            direct_message_hidden_readout=True,
+        )
+
+
 @pytest.mark.parametrize(
     "interaction_first",
     [
@@ -162,6 +212,25 @@ def test_single_interaction_forward_is_invariant_and_keeps_full_node_features(
     assert torch.isfinite(output["forces"]).all()
 
 
+def test_direct_single_interaction_forward_is_invariant_with_equivariant_forces():
+    torch.manual_seed(7)
+    model = _build_model(
+        "RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
+        direct_readout_rank=3,
+    )
+    batch, rotation = _create_batch()
+    output = model(batch, training=True, compute_force=True)
+    assert torch.allclose(output["energy"][0], output["energy"][1], atol=1.0e-8)
+    rotation_tensor = torch.as_tensor(
+        rotation, dtype=output["forces"].dtype, device=output["forces"].device
+    )
+    expected_rotated_forces = output["forces"][:3] @ rotation_tensor.T
+    assert torch.allclose(
+        expected_rotated_forces, output["forces"][3:], atol=1.0e-7, rtol=1.0e-7
+    )
+
+
 @pytest.mark.parametrize("irrep_index", [1, 2])
 def test_readout_contraction_consumes_higher_order_features(irrep_index):
     torch.manual_seed(11)
@@ -189,6 +258,17 @@ def test_single_interaction_readout_is_torchscript_compatible():
     assert len(compiled.readout_reshapes) == 1
 
 
+def test_direct_single_interaction_readout_is_torchscript_compatible():
+    model = _build_model(
+        "RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
+        direct_readout_rank=3,
+    )
+    compiled = jit.compile(model)
+    assert len(compiled.direct_readouts) == 1
+    assert len(compiled.readout_products) == 0
+
+
 def test_forward_accepts_legacy_model_without_readout_contraction_modules():
     model = _build_legacy_two_interaction_model()
     del model.readout_reshapes
@@ -211,6 +291,21 @@ def test_readout_correlation_round_trips_through_extracted_config():
     assert len(reconstructed.readout_products) == 1
 
 
+def test_direct_readout_config_round_trip():
+    model = _build_model(
+        "RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
+        direct_readout_rank=3,
+    )
+    config = extract_config_mace_model(model)
+    reconstructed = modules.ScaleShiftMACE(**config)
+    assert config["direct_message_hidden_readout"] is True
+    assert config["direct_readout_rank"] == 3
+    assert reconstructed.direct_message_hidden_readout is True
+    assert reconstructed.direct_readout_rank == 3
+    assert len(reconstructed.direct_readouts) == 1
+
+
 def test_mace_factory_preserves_requested_density_residual_first_interaction():
     args = Namespace(
         model="MACE",
@@ -226,6 +321,8 @@ def test_mace_factory_preserves_requested_density_residual_first_interaction():
         embedding_specs=None,
         use_embedding_readout=False,
         use_last_readout_only=True,
+        direct_message_hidden_readout=False,
+        direct_readout_rank=16,
         use_agnostic_product=False,
         readout_correlation=2,
     )

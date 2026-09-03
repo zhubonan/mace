@@ -203,6 +203,18 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         default=False,
     )
     parser.add_argument(
+        "--direct_message_hidden_readout",
+        help="use direct message/hidden invariant readout (one interaction only)",
+        type=str2bool,
+        default=False,
+    )
+    parser.add_argument(
+        "--direct_readout_rank",
+        help="rank of direct message/hidden invariant readout",
+        type=positive_int,
+        default=16,
+    )
+    parser.add_argument(
         "--use_embedding_readout",
         help="use embedding readout for the final output",
         type=str2bool,

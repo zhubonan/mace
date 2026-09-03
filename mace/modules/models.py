@@ -18,6 +18,7 @@ from mace.tools.torch_tools import get_change_of_basis, spherical_to_cartesian
 
 from .blocks import (
     AtomicEnergiesBlock,
+    DirectMessageHiddenReadoutBlock,
     EquivariantProductBasisBlock,
     InteractionBlock,
     LinearDipolePolarReadoutBlock,
@@ -69,6 +70,8 @@ class MACE(torch.nn.Module):
         use_so3: bool = False,
         use_agnostic_product: bool = False,
         use_last_readout_only: bool = False,
+        direct_message_hidden_readout: bool = False,
+        direct_readout_rank: int = 16,
         use_embedding_readout: bool = False,
         distance_transform: str = "None",
         edge_irreps: Optional[o3.Irreps] = None,
@@ -106,8 +109,16 @@ class MACE(torch.nn.Module):
         self.use_agnostic_product = use_agnostic_product
         self.use_so3 = use_so3
         self.use_last_readout_only = use_last_readout_only
+        self.direct_message_hidden_readout = direct_message_hidden_readout
+        self.direct_readout_rank = direct_readout_rank
         self.use_edge_irreps_first = use_edge_irreps_first
         self.readout_correlation = readout_correlation
+        if direct_message_hidden_readout and num_interactions != 1:
+            raise ValueError("direct_message_hidden_readout requires num_interactions == 1")
+        if direct_message_hidden_readout and use_last_readout_only:
+            raise ValueError(
+                "direct_message_hidden_readout is incompatible with use_last_readout_only"
+            )
         single_interaction_invariant_readout = (
             num_interactions == 1 and use_last_readout_only
         )
@@ -177,6 +188,7 @@ class MACE(torch.nn.Module):
             num_interactions == 1
             and not keep_last_layer_irreps
             and not single_interaction_invariant_readout
+            and not direct_message_hidden_readout
         ):
             hidden_irreps_out = str(hidden_irreps[0])
         else:
@@ -220,8 +232,32 @@ class MACE(torch.nn.Module):
 
         self.readout_reshapes = torch.nn.ModuleList()
         self.readout_products = torch.nn.ModuleList()
+        self.direct_readouts = torch.nn.ModuleList()
         self.readouts = torch.nn.ModuleList()
-        if single_interaction_invariant_readout:
+        if direct_message_hidden_readout:
+            assert readout_cls is not None
+            self.direct_readouts.append(
+                DirectMessageHiddenReadoutBlock(
+                    message_irreps=inter.target_irreps,
+                    hidden_irreps=hidden_irreps_out,
+                    num_elements=num_elements,
+                    rank=direct_readout_rank,
+                    cueq_config=cueq_config,
+                )
+            )
+            direct_irreps = o3.Irreps(f"{2 * direct_readout_rank}x0e")
+            self.readouts.append(
+                readout_cls(
+                    direct_irreps,
+                    (len(heads) * MLP_irreps).simplify(),
+                    gate,
+                    o3.Irreps(f"{len(heads)}x0e"),
+                    len(heads),
+                    cueq_config,
+                    oeq_config,
+                )
+            )
+        elif single_interaction_invariant_readout:
             scalar_irreps = o3.Irreps(str(hidden_irreps[0]))
             self.readout_reshapes.append(
                 reshape_irreps(hidden_irreps_out, cueq_config=cueq_config)
@@ -402,6 +438,7 @@ class MACE(torch.nn.Module):
         energies = [e0, pair_energy]
         node_energies_list = [node_e0, pair_node_energy]
         node_feats_concat: List[torch.Tensor] = []
+        direct_feats = node_feats
 
         for i, (interaction, product) in enumerate(
             zip(self.interactions, self.products)
@@ -409,7 +446,7 @@ class MACE(torch.nn.Module):
             node_attrs_slice = data["node_attrs"]
             if is_lammps and i > 0:
                 node_attrs_slice = node_attrs_slice[: lammps_natoms[0]]
-            node_feats, sc = interaction(
+            interaction_message, sc = interaction(
                 node_attrs=node_attrs_slice,
                 node_feats=node_feats,
                 edge_attrs=edge_attrs,
@@ -422,14 +459,23 @@ class MACE(torch.nn.Module):
             )
             if is_lammps and i == 0:
                 node_attrs_slice = node_attrs_slice[: lammps_natoms[0]]
-            node_feats = product(
-                node_feats=node_feats, sc=sc, node_attrs=node_attrs_slice
+            hidden_feats = product(
+                node_feats=interaction_message, sc=sc, node_attrs=node_attrs_slice
             )
+            if i == 0 and self.direct_message_hidden_readout:
+                for direct_readout in self.direct_readouts:
+                    direct_feats = direct_readout(
+                        interaction_message, hidden_feats, node_attrs_slice
+                    )
+            node_feats = hidden_feats
             node_feats_concat.append(node_feats)
 
         for i, readout in enumerate(self.readouts):
             feat_idx = -1 if len(self.readouts) == 1 else i
-            readout_feats = node_feats_concat[feat_idx]
+            if self.direct_message_hidden_readout:
+                readout_feats = direct_feats
+            else:
+                readout_feats = node_feats_concat[feat_idx]
             readout_node_attrs = data["node_attrs"]
             if is_lammps:
                 readout_node_attrs = readout_node_attrs[: lammps_natoms[0]]
@@ -593,6 +639,7 @@ class ScaleShiftMACE(MACE):
         # Interactions
         node_es_list = [pair_node_energy]
         node_feats_list: List[torch.Tensor] = []
+        direct_feats = node_feats
 
         for i, (interaction, product) in enumerate(
             zip(self.interactions, self.products)
@@ -600,7 +647,7 @@ class ScaleShiftMACE(MACE):
             node_attrs_slice = data["node_attrs"]
             if is_lammps and i > 0:
                 node_attrs_slice = node_attrs_slice[: lammps_natoms[0]]
-            node_feats, sc = interaction(
+            interaction_message, sc = interaction(
                 node_attrs=node_attrs_slice,
                 node_feats=node_feats,
                 edge_attrs=edge_attrs,
@@ -613,14 +660,23 @@ class ScaleShiftMACE(MACE):
             )
             if is_lammps and i == 0:
                 node_attrs_slice = node_attrs_slice[: lammps_natoms[0]]
-            node_feats = product(
-                node_feats=node_feats, sc=sc, node_attrs=node_attrs_slice
+            hidden_feats = product(
+                node_feats=interaction_message, sc=sc, node_attrs=node_attrs_slice
             )
+            if i == 0 and self.direct_message_hidden_readout:
+                for direct_readout in self.direct_readouts:
+                    direct_feats = direct_readout(
+                        interaction_message, hidden_feats, node_attrs_slice
+                    )
+            node_feats = hidden_feats
             node_feats_list.append(node_feats)
 
         for i, readout in enumerate(self.readouts):
             feat_idx = -1 if len(self.readouts) == 1 else i
-            readout_feats = node_feats_list[feat_idx]
+            if self.direct_message_hidden_readout:
+                readout_feats = direct_feats
+            else:
+                readout_feats = node_feats_list[feat_idx]
             readout_node_attrs = data["node_attrs"]
             if is_lammps:
                 readout_node_attrs = readout_node_attrs[: lammps_natoms[0]]

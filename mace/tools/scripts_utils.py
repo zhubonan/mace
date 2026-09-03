@@ -309,6 +309,14 @@ def extract_config_mace_model(model: torch.nn.Module) -> Dict[str, Any]:
             if hasattr(model, "use_last_readout_only")
             else False
         ),
+        "direct_message_hidden_readout": (
+            model.direct_message_hidden_readout
+            if hasattr(model, "direct_message_hidden_readout")
+            else False
+        ),
+        "direct_readout_rank": (
+            model.direct_readout_rank if hasattr(model, "direct_readout_rank") else 16
+        ),
         "use_embedding_readout": (hasattr(model, "embedding_readout")),
         "readout_cls": model.readouts[-1].__class__,
         "cueq_config": model.cueq_config if hasattr(model, "cueq_config") else None,
