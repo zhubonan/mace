@@ -125,6 +125,39 @@ def _create_single_interaction_model(
     return model
 
 
+def _create_direct_single_interaction_model() -> torch.nn.Module:
+    torch_geometric.seed_everything(1702)
+    with mace_compile.disable_e3nn_codegen():
+        model = modules.ScaleShiftMACE(
+            r_max=_CUTOFF,
+            num_bessel=4,
+            num_polynomial_cutoff=4,
+            max_ell=1,
+            interaction_cls=modules.interaction_classes[
+                "RealAgnosticDensityResidualInteractionBlock"
+            ],
+            interaction_cls_first=modules.interaction_classes[
+                "RealAgnosticDensityInteractionBlock"
+            ],
+            num_interactions=1,
+            num_elements=1,
+            hidden_irreps=o3.Irreps("8x0e + 8x1o"),
+            MLP_irreps=o3.Irreps("8x0e"),
+            gate=F.silu,
+            atomic_energies=np.array([1.0], dtype=float),
+            avg_num_neighbors=8,
+            atomic_numbers=_TABLE.zs,
+            correlation=3,
+            radial_type="bessel",
+            use_last_readout_only=False,
+            direct_message_hidden_readout=True,
+            direct_readout_rank=2,
+            atomic_inter_scale=1.0,
+            atomic_inter_shift=0.0,
+        )
+    return model
+
+
 def _create_batch(num_graphs: int = 2) -> dict[str, torch.Tensor]:
     atoms = build.bulk("C", "diamond", a=3.567, cubic=True)
     configs = [data.config_from_atoms(atoms) for _ in range(num_graphs)]
@@ -771,6 +804,39 @@ def test_single_interaction_invariant_readout_lowers_for_training(
         )
         for key in fx_model.meta["mace_output_keys"]:
             assert_close(eager_outputs[key], candidate_outputs[key])
+
+
+def test_compiled_training_direct_readout_performs_optimizer_step():
+    with tools.torch_tools.default_dtype(torch.float64):
+        model = _create_direct_single_interaction_model()
+        batch = _create_batch(num_graphs=2)
+        compiled_model = mace_compile.compile_training_model(
+            model,
+            batch,
+            output_args={
+                "energy": True,
+                "forces": True,
+                "virials": False,
+                "stress": False,
+            },
+            dynamic=False,
+        )
+        optimizer = torch.optim.Adam(model.parameters(), lr=1.0e-3)
+
+        optimizer.zero_grad()
+        outputs = compiled_model(batch)
+        loss = outputs["energy"].square().mean() + outputs["forces"].square().mean()
+        loss.backward()
+
+        assert torch.isfinite(loss)
+        gradients = [
+            parameter.grad
+            for parameter in model.parameters()
+            if parameter.grad is not None
+        ]
+        assert gradients
+        assert all(torch.isfinite(gradient).all() for gradient in gradients)
+        optimizer.step()
 
 
 def test_training_fx_accepts_two_different_symbolic_shapes():

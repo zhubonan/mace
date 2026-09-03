@@ -29,7 +29,17 @@ MAX_L = 1  # matches hidden_irreps "16x0e + 16x1o"
 
 
 def build_scale_shift_mace(
-    zs, seed, r_max=R_MAX, scale=1.0, shift=0.0, avg_num_neighbors=None
+    zs,
+    seed,
+    r_max=R_MAX,
+    scale=1.0,
+    shift=0.0,
+    avg_num_neighbors=None,
+    num_interactions=2,
+    interaction_first="RealAgnosticResidualInteractionBlock",
+    direct_message_hidden_readout=False,
+    keep_last_layer_irreps=False,
+    hidden_irreps="16x0e + 16x1o",
 ):
     torch.manual_seed(seed)
     table = tools.AtomicNumberTable(zs)
@@ -41,12 +51,10 @@ def build_scale_shift_mace(
         interaction_cls=modules.interaction_classes[
             "RealAgnosticResidualInteractionBlock"
         ],
-        interaction_cls_first=modules.interaction_classes[
-            "RealAgnosticResidualInteractionBlock"
-        ],
-        num_interactions=2,
+        interaction_cls_first=modules.interaction_classes[interaction_first],
+        num_interactions=num_interactions,
         num_elements=len(zs),
-        hidden_irreps=o3.Irreps("16x0e + 16x1o"),
+        hidden_irreps=o3.Irreps(hidden_irreps),
         MLP_irreps=o3.Irreps("16x0e"),
         gate=torch.nn.functional.silu,
         atomic_energies=np.zeros(len(zs), dtype=float),
@@ -60,6 +68,10 @@ def build_scale_shift_mace(
         atomic_inter_scale=scale,
         atomic_inter_shift=shift,
         use_reduced_cg=False,
+        use_last_readout_only=False,
+        direct_message_hidden_readout=direct_message_hidden_readout,
+        direct_readout_rank=2,
+        keep_last_layer_irreps=keep_last_layer_irreps,
     )
     return modules.ScaleShiftMACE(**model_config), table
 
@@ -151,6 +163,49 @@ def test_load_foundations_elements_model_is_usable(loaded_pair):
     assert out["energy"].shape == (1,)
     assert torch.isfinite(out["energy"]).all()
     assert out["forces"].shape == (3, 3)
+    assert torch.isfinite(out["forces"]).all()
+
+
+def test_load_foundations_elements_preserves_fresh_direct_readout():
+    source, _ = build_scale_shift_mace(
+        FOUNDATION_ZS,
+        seed=7,
+        num_interactions=1,
+        interaction_first="RealAgnosticDensityInteractionBlock",
+        keep_last_layer_irreps=True,
+        hidden_irreps="8x0e + 8x1o",
+    )
+    # Checkpoints created before direct-message readouts do not have this child.
+    del source.direct_readouts
+    target, target_table = build_scale_shift_mace(
+        TARGET_ZS,
+        seed=8,
+        num_interactions=1,
+        interaction_first="RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
+        hidden_irreps="8x0e + 8x1o",
+    )
+    direct_before = {
+        key: value.clone()
+        for key, value in target.direct_readouts[0].state_dict().items()
+    }
+
+    target = load_foundations_elements(target, source, table=target_table)
+
+    assert torch.allclose(
+        target.interactions[0].linear_up.weight,
+        source.interactions[0].linear_up.weight,
+    )
+    assert torch.allclose(
+        target.products[0].linear.weight,
+        source.products[0].linear.weight,
+    )
+    for key, value in direct_before.items():
+        assert torch.allclose(target.direct_readouts[0].state_dict()[key], value)
+
+    batch = water_batch(target_table, cutoff=R_MAX)
+    out = target(batch.to_dict(), training=False, compute_force=True)
+    assert torch.isfinite(out["energy"]).all()
     assert torch.isfinite(out["forces"]).all()
 
 
