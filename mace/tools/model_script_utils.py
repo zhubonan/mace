@@ -381,7 +381,24 @@ def _build_model(
             direct_readout_rank=getattr(args, "direct_readout_rank", 16),
         )
         if direct_message_hidden_readout:
-            model_config_foundation["use_last_readout_only"] = False
+            # Direct message/hidden readout is defined for a single, non-residual
+            # first interaction. The source foundation may have additional
+            # interactions, but only its first interaction/product is transferred.
+            correlation = model_config_foundation["correlation"]
+            model_config_foundation.update(
+                num_interactions=1,
+                interaction_cls=modules.interaction_classes[
+                    "RealAgnosticDensityInteractionBlock"
+                ],
+                interaction_cls_first=modules.interaction_classes[
+                    "RealAgnosticDensityInteractionBlock"
+                ],
+                correlation=(correlation[0] if isinstance(correlation, list) else correlation),
+                readout_correlation=(
+                    model_config_foundation.get("readout_correlation") or 2
+                ),
+                use_last_readout_only=False,
+            )
         return modules.ScaleShiftMACE(**model_config_foundation)
     if args.model == "FoundationMACELES":
         from mace.modules.extensions import MACELES

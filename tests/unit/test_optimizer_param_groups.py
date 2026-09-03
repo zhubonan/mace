@@ -85,6 +85,31 @@ def build_single_interaction_scale_shift_mace() -> torch.nn.Module:
     )
 
 
+def build_direct_single_interaction_scale_shift_mace() -> torch.nn.Module:
+    return modules.ScaleShiftMACE(
+        **{
+            **COMMON_MODEL_KWARGS,
+            "max_ell": 2,
+            "interaction_cls": interaction_classes[
+                "RealAgnosticDensityInteractionBlock"
+            ],
+            "interaction_cls_first": interaction_classes[
+                "RealAgnosticDensityInteractionBlock"
+            ],
+            "num_interactions": 1,
+            "hidden_irreps": o3.Irreps("4x0e + 4x1o + 4x2e"),
+            "correlation": 3,
+        },
+        heads=["Default"],
+        readout_correlation=2,
+        use_last_readout_only=False,
+        direct_message_hidden_readout=True,
+        direct_readout_rank=2,
+        atomic_inter_scale=1.0,
+        atomic_inter_shift=0.0,
+    )
+
+
 def build_atomic_dipoles_mace() -> torch.nn.Module:
     kwargs = {**COMMON_MODEL_KWARGS, "atomic_energies": None}
     return modules.AtomicDipolesMACE(**kwargs)
@@ -103,6 +128,7 @@ MODEL_BUILDERS = {
     "MACE": build_mace,
     "ScaleShiftMACE": build_scale_shift_mace,
     "SingleInteractionScaleShiftMACE": build_single_interaction_scale_shift_mace,
+    "DirectSingleInteractionScaleShiftMACE": build_direct_single_interaction_scale_shift_mace,
     "AtomicDipolesMACE": build_atomic_dipoles_mace,
     "AtomicDielectricMACE": build_atomic_dielectric_mace,
     "EnergyDipolesMACE": build_energy_dipoles_mace,
@@ -117,6 +143,7 @@ def _training_args() -> argparse.Namespace:
         amsgrad=True,
         beta=0.9,
         freeze=None,
+        freeze_direct_readout_backbone=False,
         optimizer="adam",
         lr_params_factors=json.dumps({}),
     )
@@ -169,6 +196,66 @@ def test_trainable_bessel_weights_get_their_own_group() -> None:
         id(parameter) for parameter in radial_embedding_groups[0]["params"]
     }
     assert id(bessel_module.bessel_weights) in registered_parameter_ids
+
+
+def test_freeze_six_keeps_only_direct_and_final_readouts_trainable() -> None:
+    model = build_direct_single_interaction_scale_shift_mace()
+    args = _training_args()
+    args.freeze = 6
+
+    param_options = get_params_options(args, model)
+    optimizer = get_optimizer(args, param_options)
+
+    trainable_names = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert trainable_names
+    assert any(name.startswith("direct_readouts.") for name in trainable_names)
+    assert any(name.startswith("readouts.") for name in trainable_names)
+    assert all(
+        name.startswith("direct_readouts.") or name.startswith("readouts.")
+        for name in trainable_names
+    )
+    optimizer_parameter_ids = {
+        id(parameter)
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    }
+    assert all(
+        id(parameter) in optimizer_parameter_ids
+        for _, parameter in model.named_parameters()
+        if parameter.requires_grad
+    )
+
+
+def test_freeze_direct_readout_backbone_keeps_only_new_heads_trainable() -> None:
+    model = build_direct_single_interaction_scale_shift_mace()
+    args = _training_args()
+    args.freeze_direct_readout_backbone = True
+
+    param_options = get_params_options(args, model)
+    optimizer = get_optimizer(args, param_options)
+
+    trainable_names = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert trainable_names
+    assert any(name.startswith("direct_readouts.") for name in trainable_names)
+    assert any(name.startswith("readouts.") for name in trainable_names)
+    assert all(
+        name.startswith("direct_readouts.") or name.startswith("readouts.")
+        for name in trainable_names
+    )
+    optimizer_parameter_ids = {
+        id(parameter)
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    }
+    assert all(
+        id(parameter) in optimizer_parameter_ids
+        for _, parameter in model.named_parameters()
+        if parameter.requires_grad
+    )
 
 
 def test_unregistered_submodule_raises() -> None:

@@ -1049,6 +1049,12 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument(
+        "--freeze_direct_readout_backbone",
+        help="freeze every transferred parameter and train only direct_message_hidden_readout and final readout heads",
+        type=str2bool,
+        default=False,
+    )
+    parser.add_argument(
         "--amsgrad",
         help="use amsgrad variant of optimizer",
         action="store_true",

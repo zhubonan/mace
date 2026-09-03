@@ -126,6 +126,13 @@ def test_direct_readout_flags_parse_custom_values():
     assert args.direct_readout_rank == 7
 
 
+def test_freeze_direct_readout_backbone_flag_parses():
+    args = build_default_arg_parser().parse_args(
+        MINIMAL_ARGV + ["--freeze_direct_readout_backbone", "true"]
+    )
+    assert args.freeze_direct_readout_backbone is True
+
+
 def test_native_omat_lmdb_options_are_explicit():
     args = build_default_arg_parser().parse_args(
         MINIMAL_ARGV

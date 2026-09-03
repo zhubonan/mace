@@ -70,6 +70,23 @@ def _build_legacy_two_interaction_model() -> modules.ScaleShiftMACE:
     )
 
 
+def test_foundation_direct_mode_replaces_the_second_interaction() -> None:
+    foundation = _build_legacy_two_interaction_model()
+    foundation_config = extract_config_mace_model(foundation)
+    args = Namespace(
+        model="FoundationMACE",
+        direct_message_hidden_readout=True,
+        direct_readout_rank=2,
+    )
+
+    target = _build_model_from_args(args, {}, foundation_config, ["Default"])
+
+    assert target.num_interactions.item() == 1
+    assert isinstance(target.interactions[0], modules.RealAgnosticDensityInteractionBlock)
+    assert target.direct_message_hidden_readout is True
+    assert target.use_last_readout_only is False
+
+
 def _create_batch() -> tuple[dict[str, torch.Tensor], np.ndarray]:
     rotation = np.array(
         [

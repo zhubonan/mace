@@ -951,7 +951,24 @@ def get_params_options(
 
     lr_params_factors = json.loads(args.lr_params_factors)
 
-    if args.freeze:
+    freeze_direct_readout_backbone = getattr(
+        args, "freeze_direct_readout_backbone", False
+    )
+    if freeze_direct_readout_backbone:
+        if not getattr(model, "direct_message_hidden_readout", False):
+            raise ValueError(
+                "--freeze_direct_readout_backbone requires "
+                "--direct_message_hidden_readout"
+            )
+        if args.freeze:
+            raise ValueError(
+                "--freeze_direct_readout_backbone cannot be combined with --freeze"
+            )
+        logging.info("Freezing transferred backbone; training direct and final readouts")
+        freeze_module(model, True)
+        freeze_module(model.direct_readouts, False)
+        freeze_module(model.readouts, False)
+    elif args.freeze:
         if args.freeze >= 7:
             logging.info("Freezing readout weights")
             lr_params_factors["readouts_lr_factor"] = 0.0
@@ -1009,6 +1026,19 @@ def get_params_options(
         amsgrad=args.amsgrad,
         betas=(args.beta, 0.999),
     )
+    direct_readouts = getattr(model, "direct_readouts", None)
+    if direct_readouts is not None:
+        direct_readout_parameters = list(direct_readouts.parameters())
+        if direct_readout_parameters:
+            param_options["params"].append(
+                {
+                    "name": "direct_readouts",
+                    "params": direct_readout_parameters,
+                    "weight_decay": 0.0,
+                    "lr": lr_params_factors.get("readouts_lr_factor", 1.0)
+                    * args.lr,
+                }
+            )
     readout_products = getattr(model, "readout_products", None)
     if readout_products is not None:
         readout_product_parameters = list(readout_products.parameters())
