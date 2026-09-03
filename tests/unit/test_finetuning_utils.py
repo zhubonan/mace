@@ -190,7 +190,9 @@ def test_load_foundations_elements_preserves_fresh_direct_readout():
         for key, value in target.direct_readouts[0].state_dict().items()
     }
 
-    target = load_foundations_elements(target, source, table=target_table)
+    target = load_foundations_elements(
+        target, source, table=target_table, load_readout=False
+    )
 
     assert torch.allclose(
         target.interactions[0].linear_up.weight,
