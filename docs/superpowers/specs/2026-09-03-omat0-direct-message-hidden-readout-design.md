@@ -75,9 +75,11 @@ the scalar invariants to the existing nonlinear readout.  It must create no
 multi-interaction paths must be unchanged.
 
 The direct block should live in a dedicated `ModuleList` named
-`direct_readouts`.  `load_foundations` must explicitly skip that module,
-alongside `interactions`, `products`, and `readouts`, so a foundation model
-without this module can be loaded safely.
+`direct_readouts`. Plain `load_foundations` already copies only source state
+keys and therefore naturally leaves this fresh target-only module untouched.
+The element-remapping `load_foundations_elements` child-module traversal must
+explicitly skip `direct_readouts`, alongside `interactions`, `products`, and
+`readouts`, so a foundation model without this module can be loaded safely.
 
 ## Verification
 
