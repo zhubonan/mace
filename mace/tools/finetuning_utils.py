@@ -344,7 +344,11 @@ def load_foundations_elements_default(
                             model_readouts_one_linear_2_bias
                         )
     _handled_attrs = {"interactions", "products", "readouts", "direct_readouts"}
-    _legacy_optional_module_lists = {"readout_reshapes", "direct_readouts"}
+    _legacy_optional_module_lists = {
+        "readout_products",
+        "readout_reshapes",
+        "direct_readouts",
+    }
     for attr_name, module in model.named_children():
         if attr_name in _handled_attrs:
             continue

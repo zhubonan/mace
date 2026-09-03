@@ -233,8 +233,10 @@ def test_load_foundations_elements_accepts_legacy_source_without_new_readout_lis
         interaction_first="RealAgnosticDensityInteractionBlock",
     )
     # These attributes did not exist when the serialized foundation was saved.
+    del source.readout_products
     del source.readout_reshapes
     del source.direct_readouts
+    assert "readout_products" not in source._modules
     assert "readout_reshapes" not in source._modules
     assert "direct_readouts" not in source._modules
 
