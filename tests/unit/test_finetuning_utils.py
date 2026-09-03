@@ -235,6 +235,8 @@ def test_load_foundations_elements_accepts_legacy_source_without_new_readout_lis
     # These attributes did not exist when the serialized foundation was saved.
     del source.readout_reshapes
     del source.direct_readouts
+    assert "readout_reshapes" not in source._modules
+    assert "direct_readouts" not in source._modules
 
     target, target_table = build_scale_shift_mace(
         TARGET_ZS,
@@ -249,6 +251,9 @@ def test_load_foundations_elements_accepts_legacy_source_without_new_readout_lis
         key: value.clone()
         for key, value in target.direct_readouts[0].state_dict().items()
     }
+    readout_before = {
+        key: value.clone() for key, value in target.readouts[-1].state_dict().items()
+    }
 
     target = load_foundations_elements(
         target, source, table=target_table, load_readout=False
@@ -260,6 +265,29 @@ def test_load_foundations_elements_accepts_legacy_source_without_new_readout_lis
     )
     for key, value in direct_before.items():
         assert torch.allclose(target.direct_readouts[0].state_dict()[key], value)
+    for key, value in readout_before.items():
+        assert torch.allclose(target.readouts[-1].state_dict()[key], value)
+
+
+def test_load_foundations_elements_rejects_missing_nonlegacy_target_child():
+    """Only known legacy readout ModuleLists may be absent from a foundation."""
+    source, _ = build_scale_shift_mace(
+        FOUNDATION_ZS,
+        seed=13,
+        num_interactions=2,
+        interaction_first="RealAgnosticDensityInteractionBlock",
+    )
+    target, target_table = build_scale_shift_mace(
+        TARGET_ZS,
+        seed=14,
+        num_interactions=1,
+        interaction_first="RealAgnosticDensityInteractionBlock",
+    )
+    target.unexpected_target_child = torch.nn.ModuleList()
+    assert "unexpected_target_child" not in source._modules
+
+    with pytest.raises(KeyError, match="unexpected_target_child"):
+        load_foundations_elements(target, source, table=target_table)
 
 
 @pytest.mark.parametrize("include_readouts", [False, True])

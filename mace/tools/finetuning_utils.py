@@ -344,14 +344,18 @@ def load_foundations_elements_default(
                             model_readouts_one_linear_2_bias
                         )
     _handled_attrs = {"interactions", "products", "readouts", "direct_readouts"}
+    _legacy_optional_module_lists = {"readout_reshapes", "direct_readouts"}
     for attr_name, module in model.named_children():
         if attr_name in _handled_attrs:
             continue
-        foundation_module = model_foundations._modules.get(attr_name)
         # New optional ModuleLists are absent from checkpoints serialized by
         # older MACE versions; there is nothing to transfer from those models.
-        if foundation_module is None:
+        if (
+            attr_name in _legacy_optional_module_lists
+            and attr_name not in model_foundations._modules
+        ):
             continue
+        foundation_module = model_foundations._modules[attr_name]
         submodules = (
             list(zip(module, foundation_module))
             if isinstance(module, torch.nn.ModuleList)
