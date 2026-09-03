@@ -37,6 +37,55 @@ def test_direct_block_channel_projections_use_readable_matmul():
     assert 'torch.einsum("ncd,rc->nrd"' not in source
 
 
+def test_direct_block_matches_explicit_0e_and_1o_projection_reference():
+    block = _block(rank=2)
+    message = torch.arange(128, dtype=torch.float32).reshape(2, 4, 16)
+    hidden = torch.arange(32, dtype=torch.float32).reshape(2, 16)
+    attrs = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    with torch.no_grad():
+        block.message_weight_0.copy_(
+            torch.tensor([[1.0, -1.0, 2.0, 0.5], [-2.0, 1.0, 0.0, 1.5]])
+        )
+        block.message_weight_1.copy_(
+            torch.tensor([[0.5, 1.0, -1.0, 2.0], [1.0, -0.5, 2.0, -1.0]])
+        )
+        block.hidden_weight_0.copy_(
+            torch.tensor([[2.0, 0.0, -1.0, 1.0], [-1.0, 1.0, 0.5, 2.0]])
+        )
+        block.hidden_weight_1.copy_(
+            torch.tensor([[1.0, -1.0, 0.5, 2.0], [0.0, 1.5, -2.0, 1.0]])
+        )
+        block.gamma.copy_(
+            torch.tensor([[1.0, 2.0, 3.0, 4.0], [0.5, -1.0, 2.0, -0.5]])
+        )
+        block.beta.copy_(
+            torch.tensor([[0.25, -0.5, 1.0, -1.5], [-2.0, 0.5, -1.0, 2.0]])
+        )
+
+    message_0 = message[:, :, :1]
+    message_1 = message[:, :, 1:4]
+    hidden_0 = hidden[:, :4].reshape(-1, 4, 1)
+    hidden_1 = hidden[:, 4:16].reshape(-1, 4, 3)
+
+    message_rank_0 = (
+        message_0.unsqueeze(1) * block.message_weight_0[None, :, :, None]
+    ).sum(dim=2)
+    hidden_rank_0 = (
+        hidden_0.unsqueeze(1) * block.hidden_weight_0[None, :, :, None]
+    ).sum(dim=2)
+    q0 = (message_rank_0 * hidden_rank_0).sum(dim=-1)
+    message_rank_1 = (
+        message_1.unsqueeze(1) * block.message_weight_1[None, :, :, None]
+    ).sum(dim=2)
+    hidden_rank_1 = (
+        hidden_1.unsqueeze(1) * block.hidden_weight_1[None, :, :, None]
+    ).sum(dim=2)
+    q1 = (message_rank_1 * hidden_rank_1).sum(dim=-1) / 3.0**0.5
+    expected = torch.cat([q0, q1], dim=-1) * (attrs @ block.gamma) + (attrs @ block.beta)
+
+    torch.testing.assert_close(block(message, hidden, attrs), expected)
+
+
 def test_direct_block_output_shape_and_central_element_conditioning():
     block = _block()
     # Keep geometric features identical across samples so any output change
