@@ -29,6 +29,7 @@ from .blocks import (
     NonLinearDipoleReadoutBlock,
     NonLinearReadoutBlock,
     RadialEmbeddingBlock,
+    RealAgnosticDensityInteractionBlock,
     ScaleShiftBlock,
 )
 from .irreps_tools import reshape_irreps
@@ -118,6 +119,14 @@ class MACE(torch.nn.Module):
         if direct_message_hidden_readout and use_last_readout_only:
             raise ValueError(
                 "direct_message_hidden_readout is incompatible with use_last_readout_only"
+            )
+        if (
+            direct_message_hidden_readout
+            and interaction_cls_first is not RealAgnosticDensityInteractionBlock
+        ):
+            raise ValueError(
+                "direct_message_hidden_readout requires "
+                "RealAgnosticDensityInteractionBlock as interaction_cls_first"
             )
         single_interaction_invariant_readout = (
             num_interactions == 1 and use_last_readout_only

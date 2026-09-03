@@ -391,6 +391,13 @@ def load_foundations_elements_default(
     for name, param in foundation_state.items():
         if name not in model_state:
             continue
+        # Direct message-hidden heads are always freshly initialized on the
+        # target model.  They must not be copied even when the source has a
+        # matching direct head (including equal-sized, differently ordered
+        # element tables).  ``load_readout`` continues to control legacy
+        # ``readouts.*`` parameters only.
+        if name.startswith("direct_readouts."):
+            continue
         if not load_readout and name.startswith("readouts."):
             continue
         if model_state[name].shape != param.shape:
@@ -634,6 +641,10 @@ def load_foundations(
     foundation_state = model_foundations.state_dict()
     for name, param in foundation_state.items():
         if name not in model_state:
+            continue
+        # Keep direct heads fresh regardless of ``include_readouts``; that
+        # flag retains its legacy semantics for ``readouts.*`` only.
+        if name.startswith("direct_readouts."):
             continue
         if not include_readouts and name.startswith("readouts."):
             continue

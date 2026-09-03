@@ -181,6 +181,16 @@ def test_direct_mode_rejects_ambiguous_or_multilayer_configuration():
             use_last_readout_only=True,
             direct_message_hidden_readout=True,
         )
+    with pytest.raises(ValueError, match="RealAgnosticDensityInteractionBlock"):
+        residual_kwargs = dict(kwargs)
+        residual_kwargs["interaction_cls_first"] = (
+            modules.RealAgnosticDensityResidualInteractionBlock
+        )
+        modules.ScaleShiftMACE(
+            **residual_kwargs,
+            num_interactions=1,
+            direct_message_hidden_readout=True,
+        )
 
 
 @pytest.mark.parametrize(

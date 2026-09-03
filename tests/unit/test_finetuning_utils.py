@@ -168,22 +168,29 @@ def test_load_foundations_elements_model_is_usable(loaded_pair):
 
 def test_load_foundations_elements_preserves_fresh_direct_readout():
     source, _ = build_scale_shift_mace(
-        FOUNDATION_ZS,
+        TARGET_ZS,
         seed=7,
         num_interactions=1,
         interaction_first="RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
         keep_last_layer_irreps=True,
         hidden_irreps="8x0e + 8x1o",
     )
-    # Checkpoints created before direct-message readouts do not have this child.
-    del source.direct_readouts
+    # These equal-sized tables deliberately use a different element ordering.
+    # Their direct heads therefore have matching state-dict shapes and would
+    # be overwritten without the explicit direct_readouts transfer exclusion.
     target, target_table = build_scale_shift_mace(
-        TARGET_ZS,
+        list(reversed(TARGET_ZS)),
         seed=8,
         num_interactions=1,
         interaction_first="RealAgnosticDensityInteractionBlock",
         direct_message_hidden_readout=True,
+        keep_last_layer_irreps=True,
         hidden_irreps="8x0e + 8x1o",
+    )
+    assert not torch.allclose(
+        target.direct_readouts[0].message_weight_0,
+        source.direct_readouts[0].message_weight_0,
     )
     direct_before = {
         key: value.clone()
@@ -209,6 +216,48 @@ def test_load_foundations_elements_preserves_fresh_direct_readout():
     out = target(batch.to_dict(), training=False, compute_force=True)
     assert torch.isfinite(out["energy"]).all()
     assert torch.isfinite(out["forces"]).all()
+
+
+def test_load_foundations_preserves_fresh_direct_readout():
+    source, _ = build_scale_shift_mace(
+        TARGET_ZS,
+        seed=9,
+        num_interactions=1,
+        interaction_first="RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
+        keep_last_layer_irreps=True,
+        hidden_irreps="8x0e + 8x1o",
+    )
+    target, _ = build_scale_shift_mace(
+        TARGET_ZS,
+        seed=10,
+        num_interactions=1,
+        interaction_first="RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
+        keep_last_layer_irreps=True,
+        hidden_irreps="8x0e + 8x1o",
+    )
+    assert not torch.allclose(
+        target.direct_readouts[0].message_weight_0,
+        source.direct_readouts[0].message_weight_0,
+    )
+    direct_before = {
+        key: value.clone()
+        for key, value in target.direct_readouts[0].state_dict().items()
+    }
+
+    target = load_foundations(target, source, include_readouts=True)
+
+    assert torch.allclose(
+        target.interactions[0].linear_up.weight,
+        source.interactions[0].linear_up.weight,
+    )
+    assert torch.allclose(
+        target.readouts[0].linear_1.weight,
+        source.readouts[0].linear_1.weight,
+    )
+    for key, value in direct_before.items():
+        assert torch.allclose(target.direct_readouts[0].state_dict()[key], value)
 
 
 def test_load_foundations_elements_r_max_mismatch_raises():
