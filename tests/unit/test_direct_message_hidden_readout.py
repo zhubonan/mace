@@ -56,6 +56,8 @@ def test_direct_block_is_deterministic_for_identical_inputs():
     [
         ("4x1o + 4x2e + 4x3o", "4x0e + 4x1o"),
         ("4x0e + 4x2e + 4x3o", "4x0e + 4x1o"),
+        ("4x0e + 4x1o", "4x1o"),
+        ("4x0e + 4x1o", "4x0e"),
         ("4x0e + 4x1o", "3x0e + 4x1o"),
     ],
 )
