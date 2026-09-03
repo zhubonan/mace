@@ -347,10 +347,15 @@ def load_foundations_elements_default(
     for attr_name, module in model.named_children():
         if attr_name in _handled_attrs:
             continue
+        foundation_module = model_foundations._modules.get(attr_name)
+        # New optional ModuleLists are absent from checkpoints serialized by
+        # older MACE versions; there is nothing to transfer from those models.
+        if foundation_module is None:
+            continue
         submodules = (
-            list(zip(module, model_foundations.__dict__["_modules"][attr_name]))
+            list(zip(module, foundation_module))
             if isinstance(module, torch.nn.ModuleList)
-            else [(module, getattr(model_foundations, attr_name))]
+            else [(module, foundation_module)]
         )
         for sub_new, sub_found in submodules:
             for emb_name in ("source_embedding", "target_embedding"):

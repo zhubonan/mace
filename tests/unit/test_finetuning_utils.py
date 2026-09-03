@@ -224,6 +224,44 @@ def test_load_foundations_elements_preserves_fresh_direct_mode_heads(load_readou
     assert torch.isfinite(out["forces"]).all()
 
 
+def test_load_foundations_elements_accepts_legacy_source_without_new_readout_lists():
+    """An old OMat-0 checkpoint predates the new empty readout ModuleLists."""
+    source, _ = build_scale_shift_mace(
+        FOUNDATION_ZS,
+        seed=11,
+        num_interactions=2,
+        interaction_first="RealAgnosticDensityInteractionBlock",
+    )
+    # These attributes did not exist when the serialized foundation was saved.
+    del source.readout_reshapes
+    del source.direct_readouts
+
+    target, target_table = build_scale_shift_mace(
+        TARGET_ZS,
+        seed=12,
+        num_interactions=1,
+        interaction_first="RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
+        keep_last_layer_irreps=True,
+        hidden_irreps="16x0e + 16x1o",
+    )
+    direct_before = {
+        key: value.clone()
+        for key, value in target.direct_readouts[0].state_dict().items()
+    }
+
+    target = load_foundations_elements(
+        target, source, table=target_table, load_readout=False
+    )
+
+    assert torch.allclose(
+        target.interactions[0].linear_up.weight,
+        source.interactions[0].linear_up.weight,
+    )
+    for key, value in direct_before.items():
+        assert torch.allclose(target.direct_readouts[0].state_dict()[key], value)
+
+
 @pytest.mark.parametrize("include_readouts", [False, True])
 def test_load_foundations_preserves_fresh_direct_mode_heads(include_readouts):
     source, _ = build_scale_shift_mace(
