@@ -71,8 +71,6 @@ class MACE(torch.nn.Module):
         use_so3: bool = False,
         use_agnostic_product: bool = False,
         use_last_readout_only: bool = False,
-        direct_message_hidden_readout: bool = False,
-        direct_readout_rank: int = 16,
         use_embedding_readout: bool = False,
         distance_transform: str = "None",
         edge_irreps: Optional[o3.Irreps] = None,
@@ -87,6 +85,8 @@ class MACE(torch.nn.Module):
         readout_cls: Optional[Type[NonLinearReadoutBlock]] = NonLinearReadoutBlock,
         keep_last_layer_irreps: bool = False,
         readout_correlation: int = 2,
+        direct_message_hidden_readout: bool = False,
+        direct_readout_rank: int = 16,
     ):
         super().__init__()
         self.register_buffer(

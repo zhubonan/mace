@@ -1,5 +1,6 @@
 """Tests for the one-interaction invariant nonlinear MACE readout."""
 
+import inspect
 from argparse import Namespace
 
 import numpy as np
@@ -332,6 +333,53 @@ def test_direct_readout_config_round_trip():
     assert reconstructed.direct_message_hidden_readout is True
     assert reconstructed.direct_readout_rank == 3
     assert len(reconstructed.direct_readouts) == 1
+
+
+def test_mace_new_direct_options_follow_existing_optional_positions():
+    option_names = list(inspect.signature(modules.MACE.__init__).parameters)[16:]
+    assert option_names == [
+        "pair_repulsion",
+        "apply_cutoff",
+        "use_reduced_cg",
+        "use_so3",
+        "use_agnostic_product",
+        "use_last_readout_only",
+        "use_embedding_readout",
+        "distance_transform",
+        "edge_irreps",
+        "use_edge_irreps_first",
+        "radial_MLP",
+        "radial_type",
+        "heads",
+        "cueq_config",
+        "embedding_specs",
+        "oeq_config",
+        "lammps_mliap",
+        "readout_cls",
+        "keep_last_layer_irreps",
+        "readout_correlation",
+        "direct_message_hidden_readout",
+        "direct_readout_rank",
+    ]
+
+
+def test_foundation_model_build_applies_requested_direct_readout_options():
+    source = _build_model("RealAgnosticDensityInteractionBlock")
+    foundation_config = extract_config_mace_model(source)
+    args = Namespace(
+        model="FoundationMACE",
+        direct_message_hidden_readout=True,
+        direct_readout_rank=3,
+    )
+
+    model = _build_model_from_args(
+        args, foundation_config, foundation_config, ["Default"]
+    )
+
+    assert model.direct_message_hidden_readout is True
+    assert model.direct_readout_rank == 3
+    assert model.use_last_readout_only is False
+    assert len(model.direct_readouts) == 1
 
 
 def test_mace_factory_preserves_requested_density_residual_first_interaction():

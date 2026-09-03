@@ -372,6 +372,16 @@ def _build_model(
             field_readout_config=field_readout_config,
         )
     if args.model == "FoundationMACE":
+        model_config_foundation = dict(model_config_foundation)
+        direct_message_hidden_readout = getattr(
+            args, "direct_message_hidden_readout", False
+        )
+        model_config_foundation.update(
+            direct_message_hidden_readout=direct_message_hidden_readout,
+            direct_readout_rank=getattr(args, "direct_readout_rank", 16),
+        )
+        if direct_message_hidden_readout:
+            model_config_foundation["use_last_readout_only"] = False
         return modules.ScaleShiftMACE(**model_config_foundation)
     if args.model == "FoundationMACELES":
         from mace.modules.extensions import MACELES

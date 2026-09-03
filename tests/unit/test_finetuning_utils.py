@@ -166,7 +166,8 @@ def test_load_foundations_elements_model_is_usable(loaded_pair):
     assert torch.isfinite(out["forces"]).all()
 
 
-def test_load_foundations_elements_preserves_fresh_direct_readout():
+@pytest.mark.parametrize("load_readout", [False, True])
+def test_load_foundations_elements_preserves_fresh_direct_mode_heads(load_readout):
     source, _ = build_scale_shift_mace(
         TARGET_ZS,
         seed=7,
@@ -196,9 +197,12 @@ def test_load_foundations_elements_preserves_fresh_direct_readout():
         key: value.clone()
         for key, value in target.direct_readouts[0].state_dict().items()
     }
+    readout_before = {
+        key: value.clone() for key, value in target.readouts[0].state_dict().items()
+    }
 
     target = load_foundations_elements(
-        target, source, table=target_table, load_readout=False
+        target, source, table=target_table, load_readout=load_readout
     )
 
     assert torch.allclose(
@@ -211,6 +215,8 @@ def test_load_foundations_elements_preserves_fresh_direct_readout():
     )
     for key, value in direct_before.items():
         assert torch.allclose(target.direct_readouts[0].state_dict()[key], value)
+    for key, value in readout_before.items():
+        assert torch.allclose(target.readouts[0].state_dict()[key], value)
 
     batch = water_batch(target_table, cutoff=R_MAX)
     out = target(batch.to_dict(), training=False, compute_force=True)
@@ -218,7 +224,8 @@ def test_load_foundations_elements_preserves_fresh_direct_readout():
     assert torch.isfinite(out["forces"]).all()
 
 
-def test_load_foundations_preserves_fresh_direct_readout():
+@pytest.mark.parametrize("include_readouts", [False, True])
+def test_load_foundations_preserves_fresh_direct_mode_heads(include_readouts):
     source, _ = build_scale_shift_mace(
         TARGET_ZS,
         seed=9,
@@ -245,19 +252,20 @@ def test_load_foundations_preserves_fresh_direct_readout():
         key: value.clone()
         for key, value in target.direct_readouts[0].state_dict().items()
     }
+    readout_before = {
+        key: value.clone() for key, value in target.readouts[0].state_dict().items()
+    }
 
-    target = load_foundations(target, source, include_readouts=True)
+    target = load_foundations(target, source, include_readouts=include_readouts)
 
     assert torch.allclose(
         target.interactions[0].linear_up.weight,
         source.interactions[0].linear_up.weight,
     )
-    assert torch.allclose(
-        target.readouts[0].linear_1.weight,
-        source.readouts[0].linear_1.weight,
-    )
     for key, value in direct_before.items():
         assert torch.allclose(target.direct_readouts[0].state_dict()[key], value)
+    for key, value in readout_before.items():
+        assert torch.allclose(target.readouts[0].state_dict()[key], value)
 
 
 def test_load_foundations_elements_r_max_mismatch_raises():
