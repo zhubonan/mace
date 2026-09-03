@@ -280,6 +280,24 @@ def test_forward_accepts_legacy_model_without_readout_contraction_modules():
     assert torch.isfinite(output["energy"]).all()
 
 
+def test_forward_accepts_legacy_model_without_direct_mode_state():
+    """A checkpoint saved before direct mode had no direct-mode attributes."""
+    model = _build_legacy_two_interaction_model()
+    for name in (
+        "direct_message_hidden_readout",
+        "direct_readout_rank",
+        "direct_readouts",
+    ):
+        if hasattr(model, name):
+            delattr(model, name)
+    batch, _ = _create_batch()
+
+    output = model(batch, training=True, compute_force=True)
+
+    assert torch.isfinite(output["energy"]).all()
+    assert torch.isfinite(output["forces"]).all()
+
+
 def test_readout_correlation_round_trips_through_extracted_config():
     model = _build_model("RealAgnosticDensityResidualInteractionBlock")
 

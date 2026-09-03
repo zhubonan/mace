@@ -438,6 +438,7 @@ class MACE(torch.nn.Module):
         energies = [e0, pair_energy]
         node_energies_list = [node_e0, pair_node_energy]
         node_feats_concat: List[torch.Tensor] = []
+        direct_mode = getattr(self, "direct_message_hidden_readout", False)
         direct_feats = node_feats
 
         for i, (interaction, product) in enumerate(
@@ -462,7 +463,7 @@ class MACE(torch.nn.Module):
             hidden_feats = product(
                 node_feats=interaction_message, sc=sc, node_attrs=node_attrs_slice
             )
-            if i == 0 and self.direct_message_hidden_readout:
+            if i == 0 and direct_mode:
                 for direct_readout in self.direct_readouts:
                     direct_feats = direct_readout(
                         interaction_message, hidden_feats, node_attrs_slice
@@ -472,7 +473,7 @@ class MACE(torch.nn.Module):
 
         for i, readout in enumerate(self.readouts):
             feat_idx = -1 if len(self.readouts) == 1 else i
-            if self.direct_message_hidden_readout:
+            if direct_mode:
                 readout_feats = direct_feats
             else:
                 readout_feats = node_feats_concat[feat_idx]
@@ -639,6 +640,7 @@ class ScaleShiftMACE(MACE):
         # Interactions
         node_es_list = [pair_node_energy]
         node_feats_list: List[torch.Tensor] = []
+        direct_mode = getattr(self, "direct_message_hidden_readout", False)
         direct_feats = node_feats
 
         for i, (interaction, product) in enumerate(
@@ -663,7 +665,7 @@ class ScaleShiftMACE(MACE):
             hidden_feats = product(
                 node_feats=interaction_message, sc=sc, node_attrs=node_attrs_slice
             )
-            if i == 0 and self.direct_message_hidden_readout:
+            if i == 0 and direct_mode:
                 for direct_readout in self.direct_readouts:
                     direct_feats = direct_readout(
                         interaction_message, hidden_feats, node_attrs_slice
@@ -673,7 +675,7 @@ class ScaleShiftMACE(MACE):
 
         for i, readout in enumerate(self.readouts):
             feat_idx = -1 if len(self.readouts) == 1 else i
-            if self.direct_message_hidden_readout:
+            if direct_mode:
                 readout_feats = direct_feats
             else:
                 readout_feats = node_feats_list[feat_idx]
