@@ -810,6 +810,7 @@ def test_compiled_training_direct_readout_performs_optimizer_step():
     with tools.torch_tools.default_dtype(torch.float64):
         model = _create_direct_single_interaction_model()
         batch = _create_batch(num_graphs=2)
+        validation_batch = _create_batch(num_graphs=3)
         compiled_model = mace_compile.compile_training_model(
             model,
             batch,
@@ -819,8 +820,10 @@ def test_compiled_training_direct_readout_performs_optimizer_step():
                 "virials": False,
                 "stress": False,
             },
-            dynamic=False,
+            dynamic=True,
+            validation_batch=validation_batch,
         )
+        assert compiled_model.is_compiled, compiled_model.compilation_error
         optimizer = torch.optim.Adam(model.parameters(), lr=1.0e-3)
 
         optimizer.zero_grad()
