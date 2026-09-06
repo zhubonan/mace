@@ -5,6 +5,7 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=2
+#SBATCH --ntasks-per-node=2
 #SBATCH --gpus=5090:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=92000M
@@ -25,6 +26,7 @@ set -euo pipefail
 : "${CACHE_ROOT:?set a writable compiler-cache root}"
 
 [[ "$SLURM_NTASKS" == "2" ]]
+[[ "${SLURM_NTASKS_PER_NODE:-}" == "2" ]]
 [[ "$SLURM_CPUS_PER_TASK" == "8" ]]
 test -r "$MACE_SOURCE_ROOT/mace/__init__.py"
 test "$(tr -d '\n' < "$MACE_SOURCE_ROOT/.source-commit")" = "$MACE_COMMIT"
