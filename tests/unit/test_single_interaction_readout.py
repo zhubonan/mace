@@ -496,6 +496,7 @@ def test_mace_new_direct_options_follow_existing_optional_positions():
         "readout_correlation",
         "direct_message_hidden_readout",
         "direct_readout_rank",
+        "omat0_first_layer_readout",
     ]
 
 
