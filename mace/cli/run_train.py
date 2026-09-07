@@ -537,7 +537,10 @@ def run(args) -> None:
                 statistics,
                 preserve_foundation_e0s=(
                     model_foundation is not None
-                    and getattr(args, "direct_message_hidden_readout", False)
+                    and (
+                        getattr(args, "direct_message_hidden_readout", False)
+                        or getattr(args, "omat0_first_layer_readout", False)
+                    )
                     and isinstance(head_config.E0s, str)
                     and head_config.E0s.lower() == "foundation"
                 ),

@@ -55,7 +55,10 @@ def configure_model(
 
     use_foundation_scale = (
         model_foundation is not None
-        and getattr(args, "direct_message_hidden_readout", False)
+        and (
+            getattr(args, "direct_message_hidden_readout", False)
+            or getattr(args, "omat0_first_layer_readout", False)
+        )
         and hasattr(model_foundation, "scale_shift")
     )
 
@@ -122,7 +125,7 @@ def configure_model(
         args.max_L = model_config_foundation["hidden_irreps"].lmax
 
         if use_foundation_scale:
-            logging.info("Preserving foundation scale and shift for direct readout")
+            logging.info("Preserving foundation scale and shift for foundation readout")
         elif args.model in (
             "ScaleShiftMACE",
             "PolarMACE",

@@ -160,6 +160,52 @@ def test_foundation_direct_mode_uses_imported_scale_without_loader_scan() -> Non
     assert target.scale_shift.shift.item() == 0.25
 
 
+def test_foundation_single_v2_mode_uses_imported_scale_without_loader_scan() -> None:
+    class NoIterationLoader:
+        def __iter__(self):
+            raise AssertionError("single-v2 foundation mode must not scan the train set")
+
+    source = _build_model(
+        "RealAgnosticDensityInteractionBlock",
+        atomic_inter_scale=0.5,
+        atomic_inter_shift=0.25,
+    )
+    args = Namespace(
+        model="MACE",
+        scaling="rms_forces_scaling",
+        mean=None,
+        std=None,
+        compute_energy=True,
+        compute_forces=True,
+        compute_dipole=False,
+        compute_polarizability=False,
+        compute_magforces=False,
+        error_table="PerAtomRMSE",
+        loss="stress",
+        foundation_model_elements=True,
+        embedding_specs=None,
+        foundation_filter_elements=True,
+        finetune_dipoles_polarizabilities=False,
+        default_dtype="float32",
+        direct_message_hidden_readout=False,
+        direct_readout_rank=16,
+        omat0_first_layer_readout=True,
+    )
+
+    target, _ = configure_model(
+        args,
+        NoIterationLoader(),
+        np.zeros(2),
+        source,
+        ["Default"],
+        tools.AtomicNumberTable([1, 8]),
+        head_configs=None,
+    )
+
+    assert target.scale_shift.scale.item() == 0.5
+    assert target.scale_shift.shift.item() == 0.25
+
+
 def _create_batch() -> tuple[dict[str, torch.Tensor], np.ndarray]:
     rotation = np.array(
         [
