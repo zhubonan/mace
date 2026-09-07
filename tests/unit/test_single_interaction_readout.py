@@ -92,6 +92,27 @@ def test_foundation_direct_mode_replaces_the_second_interaction() -> None:
     assert target.use_last_readout_only is False
 
 
+def test_foundation_single_v2_mode_uses_standard_scalar_readout() -> None:
+    foundation = _build_legacy_two_interaction_model()
+    foundation_config = extract_config_mace_model(foundation)
+    args = Namespace(
+        model="FoundationMACE",
+        direct_message_hidden_readout=False,
+        direct_readout_rank=16,
+        omat0_first_layer_readout=True,
+    )
+
+    target = _build_model_from_args(args, {}, foundation_config, ["Default"])
+
+    assert target.num_interactions.item() == 1
+    assert target.omat0_first_layer_readout is True
+    assert target.direct_message_hidden_readout is False
+    assert target.use_last_readout_only is True
+    assert len(target.direct_readouts) == 0
+    assert len(target.readout_products) == 1
+    assert len(target.readouts) == 1
+
+
 def test_foundation_direct_mode_uses_imported_scale_without_loader_scan() -> None:
     class NoIterationLoader:
         def __iter__(self):

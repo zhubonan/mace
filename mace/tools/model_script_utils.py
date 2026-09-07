@@ -314,6 +314,7 @@ def _build_model(
             use_last_readout_only=args.use_last_readout_only,
             direct_message_hidden_readout=getattr(args, "direct_message_hidden_readout", False),
             direct_readout_rank=getattr(args, "direct_readout_rank", 16),
+            omat0_first_layer_readout=getattr(args, "omat0_first_layer_readout", False),
             use_agnostic_product=args.use_agnostic_product,
             readout_correlation=args.readout_correlation,
         )
@@ -336,6 +337,7 @@ def _build_model(
             use_last_readout_only=args.use_last_readout_only,
             direct_message_hidden_readout=getattr(args, "direct_message_hidden_readout", False),
             direct_readout_rank=getattr(args, "direct_readout_rank", 16),
+            omat0_first_layer_readout=getattr(args, "omat0_first_layer_readout", False),
             use_agnostic_product=args.use_agnostic_product,
             readout_correlation=args.readout_correlation,
         )
@@ -388,9 +390,15 @@ def _build_model(
         direct_message_hidden_readout = getattr(
             args, "direct_message_hidden_readout", False
         )
+        omat0_first_layer_readout = getattr(args, "omat0_first_layer_readout", False)
+        if direct_message_hidden_readout and omat0_first_layer_readout:
+            raise ValueError(
+                "omat0_first_layer_readout is incompatible with direct_message_hidden_readout"
+            )
         model_config_foundation.update(
             direct_message_hidden_readout=direct_message_hidden_readout,
             direct_readout_rank=getattr(args, "direct_readout_rank", 16),
+            omat0_first_layer_readout=omat0_first_layer_readout,
         )
         if direct_message_hidden_readout:
             # Direct message/hidden readout is defined for a single, non-residual
@@ -410,6 +418,18 @@ def _build_model(
                     model_config_foundation.get("readout_correlation") or 2
                 ),
                 use_last_readout_only=False,
+            )
+        elif omat0_first_layer_readout:
+            correlation = model_config_foundation["correlation"]
+            model_config_foundation.update(
+                num_interactions=1,
+                correlation=(
+                    correlation[0] if isinstance(correlation, list) else correlation
+                ),
+                readout_correlation=(
+                    model_config_foundation.get("readout_correlation") or 2
+                ),
+                use_last_readout_only=True,
             )
         return modules.ScaleShiftMACE(**model_config_foundation)
     if args.model == "FoundationMACELES":

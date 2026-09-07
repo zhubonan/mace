@@ -87,6 +87,7 @@ class MACE(torch.nn.Module):
         readout_correlation: int = 2,
         direct_message_hidden_readout: bool = False,
         direct_readout_rank: int = 16,
+        omat0_first_layer_readout: bool = False,
     ):
         super().__init__()
         self.register_buffer(
@@ -112,10 +113,17 @@ class MACE(torch.nn.Module):
         self.use_last_readout_only = use_last_readout_only
         self.direct_message_hidden_readout = direct_message_hidden_readout
         self.direct_readout_rank = direct_readout_rank
+        self.omat0_first_layer_readout = omat0_first_layer_readout
         self.use_edge_irreps_first = use_edge_irreps_first
         self.readout_correlation = readout_correlation
         if direct_message_hidden_readout and num_interactions != 1:
             raise ValueError("direct_message_hidden_readout requires num_interactions == 1")
+        if omat0_first_layer_readout and num_interactions != 1:
+            raise ValueError("omat0_first_layer_readout requires num_interactions == 1")
+        if omat0_first_layer_readout and direct_message_hidden_readout:
+            raise ValueError(
+                "omat0_first_layer_readout is incompatible with direct_message_hidden_readout"
+            )
         if direct_message_hidden_readout and use_last_readout_only:
             raise ValueError(
                 "direct_message_hidden_readout is incompatible with use_last_readout_only"

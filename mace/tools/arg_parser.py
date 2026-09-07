@@ -209,6 +209,12 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         default=False,
     )
     parser.add_argument(
+        "--omat0_first_layer_readout",
+        help="build a trainable one-layer model from the first OMat-0 interaction",
+        type=str2bool,
+        default=False,
+    )
+    parser.add_argument(
         "--direct_readout_rank",
         help="rank of direct message/hidden invariant readout",
         type=positive_int,

@@ -314,6 +314,11 @@ def extract_config_mace_model(model: torch.nn.Module) -> Dict[str, Any]:
             if hasattr(model, "direct_message_hidden_readout")
             else False
         ),
+        "omat0_first_layer_readout": (
+            model.omat0_first_layer_readout
+            if hasattr(model, "omat0_first_layer_readout")
+            else False
+        ),
         "direct_readout_rank": (
             model.direct_readout_rank if hasattr(model, "direct_readout_rank") else 16
         ),

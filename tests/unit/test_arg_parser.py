@@ -73,6 +73,7 @@ def test_default_parser_critical_defaults():
     assert args.correlation == 3
     assert args.readout_correlation == 2
     assert args.direct_message_hidden_readout is False
+    assert args.omat0_first_layer_readout is False
     assert args.direct_readout_rank == 16
     assert args.num_interactions == 2
     assert args.max_train_batches_per_epoch is None
@@ -124,6 +125,13 @@ def test_direct_readout_flags_parse_custom_values():
     )
     assert args.direct_message_hidden_readout is True
     assert args.direct_readout_rank == 7
+
+
+def test_omat0_single_v2_flag_parses():
+    args = build_default_arg_parser().parse_args(
+        MINIMAL_ARGV + ["--omat0_first_layer_readout", "true"]
+    )
+    assert args.omat0_first_layer_readout is True
 
 
 def test_freeze_direct_readout_backbone_flag_parses():

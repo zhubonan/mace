@@ -239,7 +239,10 @@ def load_foundations_elements_default(
             model_foundations.products[i].linear.weight.clone()
         )
 
-    if load_readout and not getattr(model, "direct_message_hidden_readout", False):
+    if load_readout and not (
+        getattr(model, "direct_message_hidden_readout", False)
+        or getattr(model, "omat0_first_layer_readout", False)
+    ):
         # Transferring readouts
         for i, readout in enumerate(model.readouts):
             if readout.__class__.__name__ == "LinearReadoutBlock":
@@ -409,9 +412,10 @@ def load_foundations_elements_default(
         if name == "num_interactions":
             continue
         # Direct-mode heads, including their legacy readout, are always fresh.
-        if getattr(model, "direct_message_hidden_readout", False) and (
-            name.startswith("direct_readouts.") or name.startswith("readouts.")
-        ):
+        if (
+            getattr(model, "direct_message_hidden_readout", False)
+            or getattr(model, "omat0_first_layer_readout", False)
+        ) and name.startswith(("direct_readouts.", "readout_products.", "readouts.")):
             continue
         if not load_readout and name.startswith("readouts."):
             continue
@@ -658,9 +662,10 @@ def load_foundations(
         if name not in model_state:
             continue
         # Direct-mode heads, including their legacy readout, are always fresh.
-        if getattr(model, "direct_message_hidden_readout", False) and (
-            name.startswith("direct_readouts.") or name.startswith("readouts.")
-        ):
+        if (
+            getattr(model, "direct_message_hidden_readout", False)
+            or getattr(model, "omat0_first_layer_readout", False)
+        ) and name.startswith(("direct_readouts.", "readout_products.", "readouts.")):
             continue
         if not include_readouts and name.startswith("readouts."):
             continue
