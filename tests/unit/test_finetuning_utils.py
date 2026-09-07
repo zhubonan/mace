@@ -19,6 +19,7 @@ from e3nn import o3
 from mace import data, modules, tools
 from mace.tools import torch_geometric
 from mace.tools.finetuning_utils import load_foundations, load_foundations_elements
+from mace.tools.scripts_utils import extract_config_mace_model
 
 torch.set_default_dtype(torch.float64)
 
@@ -261,6 +262,8 @@ def test_load_foundations_elements_accepts_legacy_source_without_new_readout_lis
         target, source, table=target_table, load_readout=False
     )
 
+    assert target.num_interactions.item() == 1
+    assert extract_config_mace_model(target)["num_interactions"] == 1
     assert torch.allclose(
         target.interactions[0].linear_up.weight,
         source.interactions[0].linear_up.weight,

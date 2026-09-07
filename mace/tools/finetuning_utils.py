@@ -404,6 +404,10 @@ def load_foundations_elements_default(
     for name, param in foundation_state.items():
         if name not in model_state:
             continue
+        # This buffer describes target architecture. A foundation-to-direct
+        # transfer can deliberately use fewer layers than the source model.
+        if name == "num_interactions":
+            continue
         # Direct-mode heads, including their legacy readout, are always fresh.
         if getattr(model, "direct_message_hidden_readout", False) and (
             name.startswith("direct_readouts.") or name.startswith("readouts.")
