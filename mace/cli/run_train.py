@@ -122,6 +122,40 @@ def _split_input_paths(lmdb_backend, paths):
     )
 
 
+def _apply_statistics_to_head_config(
+    head_config,
+    statistics,
+    *,
+    preserve_foundation_e0s: bool = False,
+) -> None:
+    """Apply shared dataset statistics while optionally retaining checkpoint E0s."""
+    head_config.atomic_numbers = statistics["atomic_numbers"]
+    head_config.mean = statistics["mean"]
+    head_config.std = statistics["std"]
+    head_config.avg_num_neighbors = statistics["avg_num_neighbors"]
+    head_config.compute_avg_num_neighbors = False
+
+    if preserve_foundation_e0s:
+        logging.info(
+            "Preserving E0s requested from the foundation model; "
+            "statistics-file atomic energies are not applied"
+        )
+        return
+
+    if isinstance(statistics["atomic_energies"], str) and statistics[
+        "atomic_energies"
+    ].endswith(".json"):
+        with open(statistics["atomic_energies"], "r", encoding="utf-8") as f:
+            atomic_energies = json.load(f)
+        head_config.E0s = atomic_energies
+        head_config.atomic_energies_dict = ast.literal_eval(atomic_energies)
+    else:
+        head_config.E0s = statistics["atomic_energies"]
+        head_config.atomic_energies_dict = ast.literal_eval(
+            statistics["atomic_energies"]
+        )
+
+
 def _data_loader_worker_kwargs(num_workers: int) -> dict:
     """Return worker settings that avoid forking a CUDA-initialized trainer."""
     worker_kwargs = {"num_workers": num_workers}
@@ -498,23 +532,16 @@ def run(args) -> None:
             with open(head_config.statistics_file, "r") as f:  # pylint: disable=W1514
                 statistics = json.load(f)
             logging.info("Using statistics json file")
-            head_config.atomic_numbers = statistics["atomic_numbers"]
-            head_config.mean = statistics["mean"]
-            head_config.std = statistics["std"]
-            head_config.avg_num_neighbors = statistics["avg_num_neighbors"]
-            head_config.compute_avg_num_neighbors = False
-            if isinstance(statistics["atomic_energies"], str) and statistics[
-                "atomic_energies"
-            ].endswith(".json"):
-                with open(statistics["atomic_energies"], "r", encoding="utf-8") as f:
-                    atomic_energies = json.load(f)
-                head_config.E0s = atomic_energies
-                head_config.atomic_energies_dict = ast.literal_eval(atomic_energies)
-            else:
-                head_config.E0s = statistics["atomic_energies"]
-                head_config.atomic_energies_dict = ast.literal_eval(
-                    statistics["atomic_energies"]
-                )
+            _apply_statistics_to_head_config(
+                head_config,
+                statistics,
+                preserve_foundation_e0s=(
+                    model_foundation is not None
+                    and getattr(args, "direct_message_hidden_readout", False)
+                    and isinstance(head_config.E0s, str)
+                    and head_config.E0s.lower() == "foundation"
+                ),
+            )
         if head_config.train_file in (
             ["mp"],
             ["matpes_pbe"],
