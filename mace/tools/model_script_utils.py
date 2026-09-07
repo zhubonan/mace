@@ -53,34 +53,43 @@ def configure_model(
     )
     logging.info("===========MODEL DETAILS===========")
 
-    if args.scaling == "no_scaling":
-        args.std = 1.0
-        if head_configs is not None:
+    use_foundation_scale = (
+        model_foundation is not None
+        and getattr(args, "direct_message_hidden_readout", False)
+        and hasattr(model_foundation, "scale_shift")
+    )
+
+    if use_foundation_scale:
+        logging.info("Using scale and shift imported from the foundation model")
+    else:
+        if args.scaling == "no_scaling":
+            args.std = 1.0
+            if head_configs is not None:
+                for head_config in head_configs:
+                    head_config.std = 1.0
+            logging.info("No scaling selected")
+
+        if (
+            head_configs is not None
+            and args.std is not None
+            and not isinstance(args.std, list)
+        ):
+            atomic_inter_scale = []
             for head_config in head_configs:
-                head_config.std = 1.0
-        logging.info("No scaling selected")
+                if hasattr(head_config, "std") and head_config.std is not None:
+                    atomic_inter_scale.append(head_config.std)
+                elif args.std is not None:
+                    atomic_inter_scale.append(
+                        args.std if isinstance(args.std, float) else 1.0
+                    )
+            args.std = atomic_inter_scale
 
-    if (
-        head_configs is not None
-        and args.std is not None
-        and not isinstance(args.std, list)
-    ):
-        atomic_inter_scale = []
-        for head_config in head_configs:
-            if hasattr(head_config, "std") and head_config.std is not None:
-                atomic_inter_scale.append(head_config.std)
-            elif args.std is not None:
-                atomic_inter_scale.append(
-                    args.std if isinstance(args.std, float) else 1.0
-                )
-        args.std = atomic_inter_scale
-
-    elif (args.mean is None or args.std is None) and (
-        args.model not in ("AtomicDipolesMACE", "AtomicDielectricMACE")
-    ):
-        args.mean, args.std = modules.scaling_classes[args.scaling](
-            train_loader, atomic_energies
-        )
+        elif (args.mean is None or args.std is None) and (
+            args.model not in ("AtomicDipolesMACE", "AtomicDielectricMACE")
+        ):
+            args.mean, args.std = modules.scaling_classes[args.scaling](
+                train_loader, atomic_energies
+            )
     if args.embedding_specs is not None:
         logging.info("Using embedding specifications from command line arguments")
         logging.info(f"Embedding specifications: {args.embedding_specs}")
@@ -112,7 +121,9 @@ def configure_model(
 
         args.max_L = model_config_foundation["hidden_irreps"].lmax
 
-        if args.model in (
+        if use_foundation_scale:
+            logging.info("Preserving foundation scale and shift for direct readout")
+        elif args.model in (
             "ScaleShiftMACE",
             "PolarMACE",
             "MagneticScaleShiftMACE",
@@ -126,7 +137,8 @@ def configure_model(
             )
         else:
             model_config_foundation["atomic_inter_shift"] = [0.0] * len(heads)
-        model_config_foundation["atomic_inter_scale"] = [1.0] * len(heads)
+        if not use_foundation_scale:
+            model_config_foundation["atomic_inter_scale"] = [1.0] * len(heads)
         args.avg_num_neighbors = model_config_foundation["avg_num_neighbors"]
         if args.model == "MACELES":
             args.model = "FoundationMACELES"

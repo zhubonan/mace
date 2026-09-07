@@ -11,7 +11,10 @@ from e3nn.util import jit
 
 from mace import data, modules, tools
 from mace.tools import torch_geometric
-from mace.tools.model_script_utils import _build_model as _build_model_from_args
+from mace.tools.model_script_utils import (
+    _build_model as _build_model_from_args,
+    configure_model,
+)
 from mace.tools.scripts_utils import extract_config_mace_model
 
 
@@ -20,6 +23,8 @@ def _build_model(
     *,
     direct_message_hidden_readout: bool = False,
     direct_readout_rank: int = 16,
+    atomic_inter_scale: float = 1.0,
+    atomic_inter_shift: float = 0.0,
 ) -> modules.ScaleShiftMACE:
     return modules.ScaleShiftMACE(
         r_max=5.0,
@@ -43,8 +48,8 @@ def _build_model(
         use_last_readout_only=not direct_message_hidden_readout,
         direct_message_hidden_readout=direct_message_hidden_readout,
         direct_readout_rank=direct_readout_rank,
-        atomic_inter_scale=1.0,
-        atomic_inter_shift=0.0,
+        atomic_inter_scale=atomic_inter_scale,
+        atomic_inter_shift=atomic_inter_shift,
     )
 
 
@@ -85,6 +90,53 @@ def test_foundation_direct_mode_replaces_the_second_interaction() -> None:
     assert isinstance(target.interactions[0], modules.RealAgnosticDensityInteractionBlock)
     assert target.direct_message_hidden_readout is True
     assert target.use_last_readout_only is False
+
+
+def test_foundation_direct_mode_uses_imported_scale_without_loader_scan() -> None:
+    class NoIterationLoader:
+        def __iter__(self):
+            raise AssertionError("direct foundation mode must not scan the train set")
+
+    source = _build_model(
+        "RealAgnosticDensityInteractionBlock",
+        direct_message_hidden_readout=True,
+        direct_readout_rank=2,
+        atomic_inter_scale=0.5,
+        atomic_inter_shift=0.25,
+    )
+    args = Namespace(
+        model="MACE",
+        scaling="rms_forces_scaling",
+        mean=None,
+        std=None,
+        compute_energy=True,
+        compute_forces=True,
+        compute_dipole=False,
+        compute_polarizability=False,
+        compute_magforces=False,
+        error_table="PerAtomRMSE",
+        loss="stress",
+        foundation_model_elements=True,
+        embedding_specs=None,
+        foundation_filter_elements=True,
+        finetune_dipoles_polarizabilities=False,
+        default_dtype="float32",
+        direct_message_hidden_readout=True,
+        direct_readout_rank=2,
+    )
+
+    target, _ = configure_model(
+        args,
+        NoIterationLoader(),
+        np.zeros(2),
+        source,
+        ["Default"],
+        tools.AtomicNumberTable([1, 8]),
+        head_configs=None,
+    )
+
+    assert target.scale_shift.scale.item() == 0.5
+    assert target.scale_shift.shift.item() == 0.25
 
 
 def _create_batch() -> tuple[dict[str, torch.Tensor], np.ndarray]:
