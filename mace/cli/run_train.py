@@ -122,6 +122,13 @@ def _split_input_paths(lmdb_backend, paths):
     )
 
 
+def _should_read_atomic_energies_from_ase(train_files, e0s) -> bool:
+    """Return whether atomic energies should be derived from ASE-readable data."""
+    if e0s.lower() in ("foundation", "estimated"):
+        return False
+    return all(check_path_ase_read(path) for path in train_files)
+
+
 def _apply_statistics_to_head_config(
     head_config,
     statistics,
@@ -706,7 +713,9 @@ def run(args) -> None:
     for head_config in head_configs:
         if head_config.atomic_energies_dict is None or len(head_config.atomic_energies_dict) == 0:
             assert head_config.E0s is not None, "Atomic energies must be provided"
-            if all(check_path_ase_read(f) for f in head_config.train_file) and head_config.E0s.lower() not in ["foundation", "estimated"]:
+            if _should_read_atomic_energies_from_ase(
+                head_config.train_file, head_config.E0s
+            ):
                 atomic_energies_dict[head_config.head_name] = get_atomic_energies(
                     head_config.E0s, head_config.collections.train, head_config.z_table
                 )

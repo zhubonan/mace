@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import mace.cli.run_train as run_train
 from mace.cli.run_train import _apply_statistics_to_head_config
 
 
@@ -33,3 +34,15 @@ def test_statistics_file_preserves_direct_foundation_e0_request() -> None:
     assert head.compute_avg_num_neighbors is False
     assert head.E0s == "foundation"
     assert head.atomic_energies_dict is None
+
+
+def test_foundation_e0s_do_not_probe_native_dataset_as_ase(monkeypatch) -> None:
+    def fail_if_called(_path):
+        raise AssertionError("foundation E0s must not probe the train dataset")
+
+    monkeypatch.setattr(run_train, "check_path_ase_read", fail_if_called)
+
+    assert not run_train._should_read_atomic_energies_from_ase(
+        ["/data/Share/omat-aselmdb"],
+        "foundation",
+    )
