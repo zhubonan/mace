@@ -75,7 +75,7 @@ srun --ntasks="$SLURM_NTASKS" --gpu-bind=mask_gpu:0x3,0x3 --kill-on-bad-exit=1 \
     --E0s=foundation \
     --r_max=6.0 \
     --distance_transform=Agnesi \
-    --pair_repulsion=true \
+    --pair_repulsion \
     --use_last_readout_only=true \
     --loss=stress \
     --energy_weight=1 \
