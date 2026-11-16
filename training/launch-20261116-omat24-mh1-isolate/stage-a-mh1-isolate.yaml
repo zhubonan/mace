@@ -1,0 +1,88 @@
+name: "omat24-mh1-isolate-main-compile-global-random-512-128-20261116"
+seed: 20260729
+work_dir: /scratch/bonan/omat24-mh1-isolate-20261116/runs/omat24-mh1-isolate
+
+# Flat manifest-ordered symlinks to every OMat24 .aselmdb shard. Upstream
+# main's LMDBDataset reads this directory directly; no native OMat reader.
+train_file: /scratch/bonan/omat24-mh1-isolate-20261116/data/omat-aselmdb-flat
+valid_file: /scratch/bonan/train-downsample-data/optimizer-validation/validation
+batch_sampling: global_random
+atomic_numbers: "[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,89,90,91,92,93,94]"
+
+# Upstream main reconstructs this official single-head MH-1 artifact through
+# configure_model(); no direct-foundation loader is used.
+foundation_model: /scratch/bonan/omat24-mh1-taper-20261107/references/derived/mace-mh-1-omat_pbe.model
+foundation_head: omat_pbe
+foundation_model_elements: true
+foundation_model_readout: true
+E0s: foundation
+mean: 0.0
+std: 0.7735790334431056
+
+model: MACE
+hidden_irreps: "512x0e+512x1o+512x2e+512x3o"
+edge_irreps: "128x0e+128x1o"
+use_edge_irreps_first: true
+r_max: 6.0
+num_radial_basis: 10
+num_cutoff_basis: 5
+max_ell: 3
+num_interactions: 2
+correlation: 3
+use_reduced_cg: false
+use_agnostic_product: true
+interaction_first: RealAgnosticResidualNonLinearInteractionBlock
+interaction: RealAgnosticResidualNonLinearInteractionBlock
+MLP_irreps: 96x0e
+radial_MLP: "[64, 64, 64]"
+radial_type: bessel
+distance_transform: Agnesi
+pair_repulsion: true
+gate: silu
+use_last_readout_only: false
+use_embedding_readout: false
+avg_num_neighbors: 30.0
+compute_avg_num_neighbors: false
+
+compute_forces: true
+compute_stress: true
+loss: universal
+huber_delta: 0.01
+energy_weight: 1.0
+forces_weight: 10.0
+stress_weight: 10.0
+optimizer: adam
+amsgrad: true
+beta: 0.9
+lr: 0.001
+weight_decay: 1.0e-8
+scheduler: ExponentialLR
+lr_scheduler_gamma: 0.9
+ema: true
+ema_decay: 0.999
+clip_grad: 10.0
+
+batch_size: 128
+valid_batch_size: 64
+num_workers: 4
+pin_memory: true
+max_num_epochs: 20
+eval_interval: 1
+patience: 40
+
+device: cuda
+default_dtype: float32
+distributed: true
+launcher: torchrun
+enable_cueq: true
+only_cueq: false
+compile_training: true
+cueq_conv_fusion: true
+multiheads_finetuning: false
+wandb: false
+plot: false
+error_table: PerAtomRMSEstressvirials
+keep_checkpoints: true
+save_all_checkpoints: true
+save_cpu: true
+restart_latest: false

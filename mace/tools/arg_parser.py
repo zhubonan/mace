@@ -503,6 +503,15 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         default=0,
     )
     parser.add_argument(
+        "--batch_sampling",
+        choices=("random", "global_random"),
+        default="random",
+        help=(
+            "Training batch sampling policy; global_random shuffles the whole "
+            "dataset, selects complete global batches, then strides across ranks"
+        ),
+    )
+    parser.add_argument(
         "--pin_memory",
         help="Pin memory for data loading",
         default=True,

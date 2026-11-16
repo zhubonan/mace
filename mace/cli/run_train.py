@@ -37,6 +37,7 @@ from mace.cli.convert_e3nn_oeq import run as run_e3nn_to_oeq
 from mace.cli.convert_oeq_e3nn import run as run_oeq_to_e3nn
 from mace.cli.visualise_train import TrainingPlotter
 from mace.data import KeySpecification, update_keyspec_from_kwargs
+from mace.data.global_random_sampler import GlobalRandomBatchSampler
 from mace.modules.lora import inject_LoRAs, merge_lora_weights
 from mace.tools import compile as mace_compile
 from mace.tools import deprecation, torch_geometric
@@ -162,6 +163,75 @@ def _build_eager_distributed_model(
     if not distributed or compile_training:
         return None
     return DDP(model, device_ids=device_ids)
+
+
+def _build_train_loader_and_sampler(
+    train_set,
+    args,
+    *,
+    world_size: int,
+    rank: int,
+):
+    """Build the combined training loader and its epoch-aware sampler."""
+    if getattr(args, "batch_sampling", "random") == "global_random":
+        if args.lbfgs or args.data_aug_magmom:
+            raise ValueError(
+                "global_random does not support LBFGS or magnetic rotation"
+            )
+        replicas = world_size if args.distributed else 1
+        sampler_rank = rank if args.distributed else 0
+        train_sampler = GlobalRandomBatchSampler(
+            len(train_set),
+            args.batch_size,
+            seed=args.seed,
+            num_replicas=replicas,
+            rank=sampler_rank,
+        )
+        train_loader = torch_geometric.dataloader.DataLoader(
+            dataset=train_set,
+            batch_sampler=train_sampler,
+            pin_memory=args.pin_memory,
+            num_workers=args.num_workers,
+            multiprocessing_context=tools.worker_start_method(args.num_workers),
+            generator=torch.Generator().manual_seed(args.seed),
+        )
+        if sampler_rank == 0:
+            logging.info(
+                "global_random: rows=%d batch_per_rank=%d global_batch=%d "
+                "ranks=%d steps_per_epoch=%d dropped_rows=%d seed=%d torch=%s",
+                len(train_set),
+                args.batch_size,
+                args.batch_size * replicas,
+                replicas,
+                len(train_sampler),
+                len(train_set) % (args.batch_size * replicas),
+                args.seed,
+                torch.__version__,
+            )
+        return train_loader, train_sampler
+
+    train_sampler = None
+    if args.distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_set,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=(not args.lbfgs),
+            seed=args.seed,
+        )
+    train_loader = torch_geometric.dataloader.DataLoader(
+        dataset=train_set,
+        batch_size=args.batch_size,
+        sampler=train_sampler,
+        shuffle=(train_sampler is None),
+        drop_last=(train_sampler is None and not args.lbfgs),
+        pin_memory=args.pin_memory,
+        num_workers=args.num_workers,
+        multiprocessing_context=tools.worker_start_method(args.num_workers),
+        generator=torch.Generator().manual_seed(args.seed),
+    )
+    return train_loader, train_sampler
 
 
 def run(args) -> None:
@@ -832,16 +902,8 @@ def run(args) -> None:
 
     # concatenate all the trainsets
     train_set = ConcatDataset([train_sets[head] for head in heads])
-    train_sampler, valid_sampler = None, None
+    valid_sampler = None
     if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(
-            train_set,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True,
-            drop_last=(not args.lbfgs),
-            seed=args.seed,
-        )
         valid_samplers = {}
         for head, valid_set in valid_sets.items():
             valid_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -854,16 +916,11 @@ def run(args) -> None:
             )
             valid_samplers[head] = valid_sampler
 
-    train_loader = torch_geometric.dataloader.DataLoader(
-        dataset=train_set,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-        shuffle=(train_sampler is None),
-        drop_last=(train_sampler is None and not args.lbfgs),
-        pin_memory=args.pin_memory,
-        num_workers=args.num_workers,
-        multiprocessing_context=tools.worker_start_method(args.num_workers),
-        generator=torch.Generator().manual_seed(args.seed),
+    train_loader, train_sampler = _build_train_loader_and_sampler(
+        train_set,
+        args,
+        world_size=world_size,
+        rank=rank,
     )
 
     if len(train_loader) == 0:
@@ -882,6 +939,13 @@ def run(args) -> None:
         # Either way, without this the run died further down in
         # `compute_avg_num_neighbors` on a `torch.cat()` of an empty list, naming
         # none of it.
+        if isinstance(train_sampler, GlobalRandomBatchSampler):
+            raise RuntimeError(
+                "global_random requires one complete global batch: "
+                f"{len(train_set)} rows available, "
+                f"{train_sampler.batch_size * train_sampler.num_replicas} required. "
+                "Reduce --batch_size or the number of ranks, or provide more data."
+            )
         if train_sampler is not None:
             raise RuntimeError(
                 f"This rank has no training data. The distributed sampler splits "
